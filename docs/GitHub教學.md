@@ -99,7 +99,7 @@ cd infant-nap-guard
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-3. 回到專案資料夾，安裝專案需要的套件。第一次會下載 Python 3.12 和所有套件（含 PyTorch，約 2 GB），要等一下：
+3. 回到專案資料夾，安裝專案需要的套件。第一次會下載 Python 3.12 和需要的套件（約 200 MB），要等一下：
 
    ```
    uv sync
