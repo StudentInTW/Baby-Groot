@@ -21,8 +21,9 @@
 ├── pyproject.toml               # uv 專案設定與依賴
 ├── uv.lock                      # 鎖定依賴版本
 ├── infant_face_v3.py            # 風險前置實驗 v3：頭部轉正再找臉、合併重複框，姿態模型改用 RTMO（主力）
-├── infant_face_spike.py         # v2：整張圖找臉、YOLOv8（留著對照；v3 沿用它的函式）
-├── infant_prone_spike.py        # v1：關鍵點信心度規則（已知會漏報，留著對照）
+├── face_common.py               # v2、v3 共用：門檻、YuNet 找臉、配對、畫圖（不依賴 YOLOv8）
+├── infant_face_spike.py         # v2：整張圖找臉、YOLOv8（留著對照；要先 uv sync --group yolo）
+├── infant_prone_spike.py        # v1：關鍵點信心度規則（已知會漏報，留著對照；要先 uv sync --group yolo）
 ├── eval_syrip.py                # 用 SyRIP 算偵測率／誤報率，比較 YOLOv8、RTMPose、RTMO（--face v2／v3）
 ├── make_relabel_set.py          # 產生 SyRIP 誤報圖人工重標的資料包
 ├── score_relabel.py             # 用人工重標結果重算誤報率、漏判率
@@ -60,7 +61,7 @@
 
 1. 接受 Harry 寄的 GitHub 邀請（repo 是私人的）。
 2. `git clone https://github.com/StudentInTW/infant-nap-guard.git`（或照 GitHub 教學用 SSH），進到資料夾。
-3. 安裝 [uv](https://docs.astral.sh/uv/)，然後執行 `uv sync` 裝好套件。
+3. 安裝 [uv](https://docs.astral.sh/uv/)，然後執行 `uv sync` 裝好套件（約 200 MB，不含 YOLOv8 和 PyTorch）。
 4. 用自己的圖片試跑：`uv run python infant_face_v3.py 你的圖片.jpg`。第一次執行會自動下載 RTMO 模型（約 80 MB）。
 
 **不在 GitHub 上的東西**（授權或隱私的關係）：`dataset/`（SyRIP、測試圖、娃娃照片）、`outputs/`（評估結果）、`model/` 裡的 YOLOv8 權重、`docs/context.md`、`docs/archive/`、官方同意書。需要的話跟 Harry 要。
@@ -77,7 +78,7 @@ uv run python infant_face_v3.py
 不給參數就跑 `dataset/` 裡所有圖片，也可以指定圖片，例如 `uv run python infant_face_v3.py dataset/infant_2.png`。
 輸出在 `outputs/<檔名>_v3.jpg`：紅框＝臉看不見（ALERT）、綠框＝臉看得到、黃框＝偵測到的臉、紅／綠圈＝用來配對臉的頭部範圍。
 
-舊版保留作對照：
+舊版保留作對照（要用 YOLOv8，先執行 `uv sync --group yolo`，會多裝 PyTorch）：
 - v2（`infant_face_spike.py`，輸出 `<檔名>_face.jpg`）：整張圖找臉、姿態模型用 YOLOv8；躺著時橫的、倒的臉常找不到。
 - v1（`infant_prone_spike.py`，輸出 `spike_out.jpg`）：用姿態模型的臉部關鍵點信心度判斷，在趴睡圖上會漏報，原因見 [`docs/context.md`](./docs/context.md) §3。
 
@@ -87,7 +88,8 @@ uv run python infant_face_v3.py
 uv run python eval_syrip.py
 ```
 
-直接讀 `dataset/SyRIP_Posture.zip`（不用解壓），在 700 張真實嬰兒圖上比較 YOLOv8、RTMPose、RTMO 三個姿態模型；人臉偵測固定用 YuNet。
+直接讀 `dataset/SyRIP_Posture.zip`（不用解壓），在 700 張真實嬰兒圖上比較 YOLOv8、RTMPose、RTMO 三個姿態模型；人臉偵測固定用 YuNet。比較 YOLOv8 要先 `uv sync --group yolo`；只比 RTMPose、RTMO 的話加 `--models rtmpose rtmo`。
+**注意**：用 `--limit` 試跑也會覆蓋 `outputs/syrip_eval/` 裡同名的 CSV，試跑完要再跑一次完整的，`score_relabel.py` 才算得準。
 CPU 上全部跑完約 10 分鐘，可以先用 `--limit 10` 試跑；加 `--face v3` 改用 v3 的人臉判斷（輸出檔名加 `_v3`）。RTMPose／RTMO 的權重第一次執行時會自動下載到 `~/.cache/rtmlib`（約 220 MB）。
 結果在 `outputs/syrip_eval/`：每個模型一份 CSV，加上誤報縮圖供人工複查。**SyRIP 的圖只能內部評估，這個資料夾的東西不可放進簡報、影片或 GitHub。**
 

@@ -30,6 +30,10 @@ source = { virtual = "." }
 dependencies = [
     { name = "opencv-python" },
     { name = "rtmlib" },
+]
+
+[package.dev-dependencies]
+yolo = [
     { name = "ultralytics" },
 ]
 
@@ -37,8 +41,10 @@ dependencies = [
 requires-dist = [
     { name = "opencv-python", specifier = ">=5.0.0.93" },
     { name = "rtmlib", specifier = ">=0.0.16" },
-    { name = "ultralytics", specifier = ">=8.4.150" },
 ]
+
+[package.metadata.requires-dev]
+yolo = [{ name = "ultralytics", specifier = ">=8.4.150" }]
 
 [[package]]
 name = "certifi"

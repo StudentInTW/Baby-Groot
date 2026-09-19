@@ -26,7 +26,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from infant_face_spike import (  # 沿用 v2 的門檻、整張圖人臉偵測、配對與畫圖
+from face_common import (  # 和 v2 共用的門檻、整張圖人臉偵測、配對與畫圖；不依賴 YOLOv8
     FACE_MODEL, FACE_SCORE_TH, GREEN, KPT_TH, OUT_DIR, RED, ROOT, YELLOW,
     assign_faces, detect_faces, make_person, put_label,
 )

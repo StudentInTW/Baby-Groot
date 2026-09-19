@@ -10,7 +10,7 @@ eval_syrip.py
   v2 —— 整張圖找臉，再配給頭部最近的人（infant_face_spike.py）
   v3 —— v2 再加上「每個人的頭部區域轉正後找臉」和「合併重複框」（infant_face_v3.py）
 姿態模型（--models）：
-  yolov8  —— Ultralytics YOLOv8n-pose（AGPL）
+  yolov8  —— Ultralytics YOLOv8n-pose（AGPL；要先 uv sync --group yolo）
   rtmpose —— rtmlib：YOLOX-m 找人 + RTMPose-m 估姿態（Apache-2.0）
   rtmo    —— rtmlib：RTMO-m 一次找出所有人和姿態（Apache-2.0）
 三個模型的找人門檻統一 0.3，比較才公平（v2 的 YOLOv8 平常用預設 0.25）。
@@ -39,8 +39,8 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from infant_face_spike import (  # v2 的人臉偵測、配對規則與門檻
-    FACE_MODEL, FACE_SCORE_TH, POSE_MODEL, assign_faces, detect_faces, make_person,
+from face_common import (  # v2 的人臉偵測、配對規則與門檻
+    FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
 )
 from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
 
@@ -80,7 +80,11 @@ def load_models(names):
     """回傳 {名稱: 找人函式}；找人函式輸入 BGR 圖，輸出 [(box_xyxy, kpts(17,3)), ...]。"""
     models = {}
     if "yolov8" in names:
-        from ultralytics import YOLO
+        try:
+            from ultralytics import YOLO
+        except ImportError:
+            raise SystemExit("要比較 YOLOv8，請先執行 uv sync --group yolo（會多裝 PyTorch）")
+        from infant_face_spike import POSE_MODEL
         yolo = YOLO(str(POSE_MODEL))
 
         def run_yolo(img):

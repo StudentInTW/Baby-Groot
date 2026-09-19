@@ -7,6 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "opencv-python>=5.0.0.93",
     "rtmlib>=0.0.16",
+]
+
+[dependency-groups]
+# YOLOv8（AGPL）只給舊版實驗 v1、v2 和 eval_syrip.py 的 YOLOv8 比較用，v3 不需要。
+# 要用時執行：uv sync --group yolo（會多裝 PyTorch，約 2 GB）
+yolo = [
     "ultralytics>=8.4.150",
 ]
 
