@@ -1,0 +1,16 @@
+[project]
+name = "asus-hackathon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "opencv-python>=5.0.0.93",
+    "rtmlib>=0.0.16",
+    "ultralytics>=8.4.150",
+]
+
+[tool.uv]
+# rtmlib 同時依賴 opencv-python 和 opencv-contrib-python，兩個都會裝成 cv2 而互相衝突；
+# 我們只用核心功能，所以把 contrib 排除（marker 永遠不成立＝不安裝）。
+override-dependencies = ["opencv-contrib-python; sys_platform == 'never'"]

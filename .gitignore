@@ -1,0 +1,18 @@
+# 虛擬環境、快取
+.venv/
+__pycache__/
+*.pyc
+
+# 資料與輸出不進 repo（授權與隱私）：SyRIP、網路圖、娃娃照片、評估結果
+dataset/
+outputs/
+spike_out.jpg
+
+# 模型權重不進 repo（RTMO 由 rtmlib 自動下載）；YuNet 很小、授權 MIT，保留
+model/*
+!model/face_detection_yunet_2023mar.onnx
+
+# 只留在本機的文件
+docs/context.md
+docs/*.docx
+docs/archive/
