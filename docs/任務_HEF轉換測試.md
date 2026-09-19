@@ -2,6 +2,8 @@
 
 **給**：士丞　**目的**：趁晶片還沒到，先確認我們的模型轉得成 Hailo-10H 的 HEF、量化後準確度沒掉太多。卡關越早發現越好。
 
+**開始之前**：先照 [`GitHub教學.md`](GitHub教學.md) 做到第 4 節——註冊 GitHub、把程式抓到 WSL、跑得起來。
+
 ## 我們用到的模型
 
 系統要跑**兩種模型**：姿態模型找出畫面裡的每個嬰兒和關鍵點，人臉模型判斷口鼻看不看得到。警報邏輯在主機 CPU 上跑，不用進 HEF。
@@ -42,10 +44,17 @@
 
 ## 步驟
 
-1. 到 Hailo Developer Zone 註冊，下載**支援 Hailo-10H 的 Dataflow Compiler**（要 Linux，或 Windows 上的 WSL2）。
+1. 到 Hailo Developer Zone 註冊，下載**支援 Hailo-10H 的 Dataflow Compiler**（要 Linux，或 Windows 上的 WSL2）。照官方說明另外建一個 Python 環境安裝，不要裝進專案的 `.venv`，套件版本會打架。
 2. 每個模型依序做 parse → optimize（量化）→ compile，記下每一步成功與否和錯誤訊息。先從最單純的 YuNet 和 RTMPose 開始，流程通了再挑戰 RTMO。
 3. 編譯成功的模型，用編譯器的模擬器（emulator）跑幾張圖，跟 ONNX 的結果比（同一張圖，框和關鍵點位置差多少）。需要 ONNX 的標準輸出就跟 Harry 拿。
-4. 回報給 Harry：哪些模型轉成功、卡在哪一步（附錯誤訊息）、量化後差多少、編譯器估的 FPS。
+4. **回報**：把結果寫進 `hailo/結果.md`——哪些模型轉成功、卡在哪一步（附錯誤訊息）、量化後差多少、編譯器估的 FPS。push 到你的 `hef-test` 分支，再開 Pull Request，Harry 就看得到。
+
+## 你的工作放哪裡
+
+- 在自己的分支 `hef-test` 上做（GitHub 教學第 5 節）。
+- 轉換用的腳本、筆記放在 repo 裡的 `hailo/` 資料夾，結果寫在 `hailo/結果.md`。
+- 下載的 ONNX 可以放 `hailo/models/`，校正用的圖放 `hailo/calib/`。這些都**不會**被傳上 GitHub：`.gitignore` 已經擋掉 `.onnx`、`.hef`、`.har`、log 檔和 `hailo/calib/`。
+- Hailo 的安裝檔、帳號資訊不要放進 repo。
 
 ## 9/30 說明會可以問 Hailo
 

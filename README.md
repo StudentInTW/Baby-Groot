@@ -45,6 +45,7 @@
 │   ├── demo規格.md              # 偵測到危險後怎麼通知、情報版、demo 影片腳本、訪談題目
 │   ├── 任務_AI生成圖.md         # 給嘉晏哥哥：用 Stable Diffusion 生成測試圖
 │   ├── 任務_HEF轉換測試.md      # 給士丞：模型轉 HEF 的可行性測試
+│   ├── GitHub教學.md            # 給隊友：從註冊 GitHub 到上傳自己的工作
 │   ├── ASUS UGen AI League_著作財產權授權暨肖像授權同意書.docx  # 官方同意書，每位隊員各簽一張
 │   └── archive/
 │       ├── 招募版提案.md        # 已歸檔；痛點數據與來源在這份
@@ -55,8 +56,10 @@
 
 ## 從 GitHub 抓下來之後（隊友看這裡）
 
+第一次用 GitHub 的話，照 [`docs/GitHub教學.md`](./docs/GitHub教學.md) 一步一步做（從註冊帳號開始）。
+
 1. 接受 Harry 寄的 GitHub 邀請（repo 是私人的）。
-2. `git clone <repo 網址>`，進到資料夾。
+2. `git clone https://github.com/StudentInTW/infant-nap-guard.git`（或照 GitHub 教學用 SSH），進到資料夾。
 3. 安裝 [uv](https://docs.astral.sh/uv/)，然後執行 `uv sync` 裝好套件。
 4. 用自己的圖片試跑：`uv run python infant_face_v3.py 你的圖片.jpg`。第一次執行會自動下載 RTMO 模型（約 80 MB）。
 
