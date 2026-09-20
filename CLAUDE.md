@@ -1,0 +1,28 @@
+# CLAUDE.md
+
+給在這個 repo 工作的 Claude（和新接手的人）。
+
+## 這是什麼
+
+托嬰中心午睡安全監看：一台邊緣裝置（ASUS UGen300／Hailo-10H）同時看整間午睡室的多名嬰兒，口鼻看不到就發出警示，影像全程在本地處理。參加 ASUS UGen AI League（Battlefield Lightning 賽道）。
+
+**Stage I 截止 2026/10/14 17:00**：英文簡報（正文 ≤20 頁，要附這個 repo 的連結）＋ ≤3 分鐘英文影片（上傳 YouTube、設「知道連結者可觀看」）。
+
+## 開場先讀
+
+1. `docs/context.md`——決策與理由、現況、下一步。**這份只在 Harry 的電腦上，不在 GitHub**；沒有的話就讀 `README.md` 和 `docs/` 裡其他文件。
+2. `README.md`——怎麼跑、資料夾結構。
+
+## 慣例
+
+- **回覆用繁體中文。**
+- **主力程式是 `infant_face_v3.py`**：RTMO 找出所有人 → 頭部依身體方向轉正 → YuNet 找臉 → 判斷每個嬰兒的口鼻看不看得到。`infant_face_spike.py`（v2）和 `infant_prone_spike.py`（v1）留著對照，改版時不要直接覆蓋。
+- **YOLOv8 是選配**（AGPL，只有 v1、v2 和評估比較會用到）：要用時 `uv sync --group yolo`。平常 `uv sync` 不會裝它，也不需要 PyTorch。
+- **這些不進 repo**：`dataset/`、`outputs/`、模型權重（YuNet 除外）、`docs/context.md`、官方同意書。`.gitignore` 已設定好。
+- **SyRIP 只能內部評估**：它的圖、以及由它產生的輸出圖，不可放進簡報、影片或 repo。
+- **評估流程**：`eval_syrip.py --face v3` 跑分 → `score_relabel.py` 用人工標註重算真實的誤報率。注意用 `--limit` 試跑會覆蓋 `outputs/syrip_eval/` 裡的 CSV。
+- **Stage I 不訓練模型**：用現成、授權寬鬆的模型加上演算法設計。
+
+## 範圍護欄
+
+晶片 10/26 入圍後才寄到，所以實機部署、量化、實機效能測試都等入圍。唯一例外是 HEF 轉換可行性測試（不需要晶片，見 `docs/任務_HEF轉換測試.md`）。
