@@ -9,6 +9,7 @@ eval_syrip.py
 人臉判斷（--face）：
   v2 —— 整張圖找臉，再配給頭部最近的人（infant_face_spike.py）
   v3 —— v2 再加上「每個人的頭部區域轉正後找臉」和「合併重複框」（infant_face_v3.py）
+  v4 —— v3 再加上「口鼻檢查」：找到的臉，下半臉不像皮膚就不算數（infant_face_v4.py）
 姿態模型（--models）：
   yolov8  —— Ultralytics YOLOv8n-pose（AGPL；要先 uv sync --group yolo）
   rtmpose —— rtmlib：YOLOX-m 找人 + RTMPose-m 估姿態（Apache-2.0）
@@ -21,6 +22,7 @@ outputs/syrip_eval/ 裡的東西不可放進簡報、影片或 GitHub，簡報�
 用法：
     uv run python eval_syrip.py                       # 人臉判斷 v2、三個模型
     uv run python eval_syrip.py --face v3             # 人臉判斷 v3（輸出檔名加 _v3）
+    uv run python eval_syrip.py --face v4 --models rtmo  # 人臉判斷 v4，只跑 RTMO（輸出 rtmo_v4.csv）
     uv run python eval_syrip.py --limit 10            # 先跑 10 張試試
     uv run python eval_syrip.py --models yolov8 rtmo  # 只跑指定模型
 """
@@ -43,6 +45,7 @@ from face_common import (  # v2 的人臉偵測、配對規則與門檻
     FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
 )
 from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
+from infant_face_v4 import detect_faces_v4, drop_covered_faces
 
 ROOT = Path(__file__).parent
 SYRIP_ZIP = ROOT / "dataset" / "SyRIP_Posture.zip"
@@ -172,7 +175,7 @@ def report(rows, secs, n_images, face):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="+", default=["yolov8", "rtmpose", "rtmo"])
-    ap.add_argument("--face", choices=["v2", "v3"], default="v2")
+    ap.add_argument("--face", choices=["v2", "v3", "v4"], default="v2")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張（0＝全部）")
     args = ap.parse_args()
 
@@ -196,14 +199,16 @@ def main():
             t = time.perf_counter()
             dets = run(img)
             secs[m] += time.perf_counter() - t
-            if args.face == "v3":  # v3 要依每個人的頭部區域找臉，所以每個模型各找一次
+            if args.face in ("v3", "v4"):  # v3、v4 要依每個人的頭部區域找臉，所以每個模型各找一次
                 persons = make_persons(dets)
                 t = time.perf_counter()
-                faces = detect_faces_v3(face_det, img, persons)
+                faces = (detect_faces_v4 if args.face == "v4" else detect_faces_v3)(face_det, img, persons)
                 secs["face"] += (time.perf_counter() - t) / len(models)
             else:
                 persons = [p for p in (make_person(b, k) for b, k in dets) if p is not None]
             assign_faces(persons, faces)
+            if args.face == "v4":  # 口鼻被蓋住的臉不算數
+                drop_covered_faces(img, persons)
             ious = [iou(p["box"], s["box"]) for p in persons]
             best = int(np.argmax(ious)) if ious else -1
             p = persons[best] if best >= 0 and ious[best] >= IOU_TH else None
