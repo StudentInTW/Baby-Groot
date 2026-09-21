@@ -17,10 +17,14 @@
 
 - **回覆用繁體中文。**
 - **主力程式是 `infant_face_v3.py`**：RTMO 找出所有人 → 頭部依身體方向轉正 → YuNet 找臉 → 判斷每個嬰兒的口鼻看不看得到。`infant_face_spike.py`（v2）和 `infant_prone_spike.py`（v1）留著對照，改版時不要直接覆蓋。
+- **`infant_face_v4.py`（v3＋口鼻檢查）是實驗版，還沒採用**：娃娃上能擋掉「只露眼睛」的假臉，但 SyRIP 誤報 6.1% → 16.6%（真實嬰兒會張嘴、戴帽子、臉很小）。細節見 `docs/娃娃測試結果.md` §5。
 - **YOLOv8 是選配**（AGPL，只有 v1、v2 和評估比較會用到）：要用時 `uv sync --group yolo`。平常 `uv sync` 不會裝它，也不需要 PyTorch。
 - **這些不進 repo**：`dataset/`、`outputs/`、模型權重（YuNet 除外）、`docs/context.md`、官方同意書。`.gitignore` 已設定好。
 - **SyRIP 只能內部評估**：它的圖、以及由它產生的輸出圖，不可放進簡報、影片或 repo。
-- **評估流程**：`eval_syrip.py --face v3` 跑分 → `score_relabel.py` 用人工標註重算真實的誤報率。注意用 `--limit` 試跑會覆蓋 `outputs/syrip_eval/` 裡的 CSV。
+- **評估流程**（改了 `infant_face_v3.py` 就三套都要重跑）：
+  - SyRIP（測誤報）：`eval_syrip.py --face v3` 跑分 → `score_relabel.py` 用人工標註重算真實的誤報率。注意用 `--limit` 試跑會覆蓋 `outputs/syrip_eval/` 裡的 CSV。
+  - 娃娃影片（測床位模式和警示狀態機）：`eval_video.py`，床位在 `doll_video_slots.csv`、時間軸在 `doll_video_labels.csv`（只列手不在畫面裡的片段）。結果見 `docs/影片測試結果.md`。
+  - 娃娃擺拍（測危險情境召回）：`eval_doll.py`，標註在 `doll_labels.csv`。**計分單位是「每隻娃娃」**，不是每張照片——同框兩隻都危險、只抓到一隻時，用整張圖算會被判對。結果和失敗模式見 `docs/娃娃測試結果.md`。
 - **Stage I 不訓練模型**：用現成、授權寬鬆的模型加上演算法設計。
 
 ## 範圍護欄
