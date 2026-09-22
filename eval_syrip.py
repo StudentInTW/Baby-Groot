@@ -44,6 +44,7 @@ import numpy as np
 from face_common import (  # v2 的人臉偵測、配對規則與門檻
     FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
 )
+import infant_face_v5
 from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
 from infant_face_v4 import detect_faces_v4, drop_covered_faces
 
@@ -175,7 +176,7 @@ def report(rows, secs, n_images, face):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="+", default=["yolov8", "rtmpose", "rtmo"])
-    ap.add_argument("--face", choices=["v2", "v3", "v4"], default="v2")
+    ap.add_argument("--face", choices=["v2", "v3", "v4", "v5"], default="v2")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張（0＝全部）")
     args = ap.parse_args()
 
@@ -183,7 +184,9 @@ def main():
     if args.limit:
         samples = samples[:args.limit]
     models = load_models(args.models)
-    face_det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
+    # v5 要抓側臉，偵測門檻降到 FACE_TH_V5（0.3），再靠三級分類擋假臉
+    face_th = infant_face_v5.FACE_TH_V5 if args.face == "v5" else FACE_SCORE_TH
+    face_det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), face_th)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     rows = {m: [] for m in models}
@@ -199,20 +202,26 @@ def main():
             t = time.perf_counter()
             dets = run(img)
             secs[m] += time.perf_counter() - t
-            if args.face in ("v3", "v4"):  # v3、v4 要依每個人的頭部區域找臉，所以每個模型各找一次
+            if args.face in ("v3", "v4", "v5"):  # 要依每個人的頭部區域找臉，所以每個模型各找一次
                 persons = make_persons(dets)
                 t = time.perf_counter()
-                faces = (detect_faces_v4 if args.face == "v4" else detect_faces_v3)(face_det, img, persons)
+                # v5 的 backbone＝v4（正常門檻＋口鼻膚色，保住召回）；detect_faces_v4 內部用 fc.FACE_SCORE_TH 過濾
+                faces = (detect_faces_v4 if args.face in ("v4", "v5") else detect_faces_v3)(face_det, img, persons)
                 secs["face"] += (time.perf_counter() - t) / len(models)
             else:
                 persons = [p for p in (make_person(b, k) for b, k in dets) if p is not None]
             assign_faces(persons, faces)
-            if args.face == "v4":  # 口鼻被蓋住的臉不算數
+            if args.face in ("v4", "v5"):  # 口鼻被蓋住的臉不算數（v5 也用 v4 當骨幹）
                 drop_covered_faces(img, persons)
+            if args.face == "v5":  # 三級：backbone 可見→正臉 ok/側臉 warn；backbone alert→只有乾淨側臉才降 warn
+                low = infant_face_v5.detect_faces_v5(face_det, img, persons)
+                low_by = infant_face_v5.assign_low(persons, low)
+                for pp in persons:
+                    pp["tier"] = infant_face_v5.tier_hybrid(bool(pp["faces"]), pp["faces"], low_by[id(pp)], img)
             ious = [iou(p["box"], s["box"]) for p in persons]
             best = int(np.argmax(ious)) if ious else -1
             p = persons[best] if best >= 0 and ious[best] >= IOU_TH else None
-            alert = p is not None and not p["faces"]
+            alert = p is not None and (p["tier"] == "alert" if args.face == "v5" else not p["faces"])
             rows[m].append({
                 "file": s["file"], "posture": s["posture"], "gt_face_visible": s["face_visible"],
                 "found": p is not None, "iou": round(ious[best], 3) if ious else 0.0,

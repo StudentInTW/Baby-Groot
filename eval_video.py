@@ -40,6 +40,7 @@ import numpy as np
 
 import infant_face_v3
 import infant_face_v4
+import infant_face_v5
 from face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, assign_faces, put_label
 from infant_face_v3 import load_rtmo, make_persons
 
@@ -48,8 +49,8 @@ VIDEO_DIR = ROOT / "dataset" / "doll_video"
 LABELS = ROOT / "doll_video_labels.csv"
 SLOTS = ROOT / "doll_video_slots.csv"
 OUT_DIR = ROOT / "outputs" / "video_eval"
-MODES = ("v3", "v3_slot", "v4_slot")
-MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot"}
+MODES = ("v3", "v3_slot", "v4_slot", "v5_slot")
+MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot", "v5_slot": "v5+slot"}
 PREVIEW_W = 540     # 標註影片的寬度
 SLOT_INPUT = 640    # 床位範圍縮到長邊這麼多像素再找臉
 SLOT_FACE_TH = 0.8  # 床位範圍找到的臉要多高分才算（跟 v3 頭部裁切一樣：裁切後比較容易把抱枕圖案看成臉）
@@ -78,8 +79,8 @@ def gt_at(segments, doll, t):
     return next((s for s in segments if s["doll"] == doll and s["start"] <= t <= s["end"]), None)
 
 
-def slot_faces(detector, frame, rect, rot):
-    """在床位範圍裡找臉：依床位方向轉正後找，框和特徵點換回原圖座標。"""
+def slot_faces(detector, frame, rect, rot, min_score=SLOT_FACE_TH):
+    """在床位範圍裡找臉：依床位方向轉正後找，框和特徵點換回原圖座標。min_score 可降低以抓側臉（v5）。"""
     h, w = frame.shape[:2]
     x0, y0 = int(rect[0] * w), int(rect[1] * h)
     crop = frame[y0:int(rect[3] * h), x0:int(rect[2] * w)]
@@ -92,7 +93,7 @@ def slot_faces(detector, frame, rect, rot):
     _, found = detector.detect(img)
     faces = []
     for f in [] if found is None else found:
-        if f[-1] < SLOT_FACE_TH:
+        if f[-1] < min_score:
             continue
         pts = np.vstack([f[:2], f[:2] + f[2:4], f[4:14].reshape(5, 2)]).astype(np.float64)  # 框的兩角＋5 個特徵點
         u, v = pts[:, 0].copy(), pts[:, 1].copy()
@@ -108,9 +109,10 @@ def slot_faces(detector, frame, rect, rot):
     return faces
 
 
-def detect(run_pose, detector, frame, slots, rots):
-    """一幀：回傳每個床位在三種判定下的狀態，和畫圖用的偵測結果。
-    狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人（只有 v3 會出現）。"""
+def detect(run_pose, detector, det_v5, frame, slots, rots):
+    """一幀：回傳每個床位在四種判定下的狀態，和畫圖用的偵測結果。
+    狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人（只有 v3 會出現）。
+    v5 額外輸出三級 tier（ok 正臉／warn 側臉／alert）；binary 狀態把 ok、warn 都當 visible（不硬警示）。"""
     h, w = frame.shape[:2]
     persons = make_persons(run_pose(frame))
     faces = infant_face_v4.detect_faces_v4(detector, frame, persons)  # 跟 v3 找到的臉逐一相同，多帶特徵點
@@ -138,11 +140,18 @@ def detect(run_pose, detector, frame, slots, rots):
         slot_v3 = any(face_in_slot(f) for fs in v3_faces for f in fs) or bool(found)
         slot_v4 = any(face_in_slot(f) for fs in v4_faces for f in fs) \
             or any(f.skin >= infant_face_v4.MOUTH_SKIN_MIN for f in found)
+        # v5：混合三級——backbone 用 v4_slot（保住召回），visible 再分正臉 ok／側臉 warn；
+        #     backbone 判 alert 時，只有低門檻找到「乾淨側臉」才把 alert 降成 warn（found5）
+        backbone5 = [f for fs in v4_faces for f in fs if face_in_slot(f)] + list(found)
+        found5 = slot_faces(det_v5, frame, (x0, y0, x1, y1), rots[doll], min_score=infant_face_v5.FACE_TH_V5)
+        v5_tier = infant_face_v5.tier_hybrid(slot_v4, backbone5, found5, frame)
         result[doll] = {
             "persons": len(inside),
             "v3": "visible" if any_v3 else ("hidden" if inside else "none"),
             "v3_slot": "visible" if slot_v3 else "hidden",
             "v4_slot": "visible" if slot_v4 else "hidden",
+            "v5_slot": "visible" if v5_tier in ("ok", "warn") else "hidden",
+            "v5_tier": v5_tier,
             "face_scores": " ".join(f"{f[4]:.2f}" for i in inside for f in persons[i]["faces"] + persons[i]["covered"]),
             "slot_face_scores": " ".join(f"{f[4]:.2f}" for f in found),
             "mouth_skin": " ".join(f"{f.skin:.2f}" for i in inside for f in persons[i]["faces"] + persons[i]["covered"]
@@ -315,7 +324,7 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
     return cv2.resize(vis, (PREVIEW_W, round(h * s)), interpolation=cv2.INTER_AREA)
 
 
-def run_video(name, ann, args, run_pose, detector):
+def run_video(name, ann, args, run_pose, detector, det_v5):
     """逐幀偵測（每秒 --fps 幀），存每幀結果和標註影片。回傳 rows、影片長度。"""
     cap = cv2.VideoCapture(str(VIDEO_DIR / f"{name}.MOV"))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -330,12 +339,13 @@ def run_video(name, ann, args, run_pose, detector):
         if i % step == 0:
             _, frame = cap.retrieve()
             t = i / src_fps
-            states, persons, faces = detect(run_pose, detector, frame, slots, rots)
+            states, persons, faces = detect(run_pose, detector, det_v5, frame, slots, rots)
             alert_now = {}
             for doll, st in states.items():
                 seg = gt_at(segments, doll, t)
                 rows.append({"t": round(t, 3), "doll": doll, "gt": "" if seg is None else seg["label"],
                              "persons": st["persons"], **{m: st[m] for m in MODES},
+                             "v5_tier": st["v5_tier"],
                              "face_scores": st["face_scores"], "slot_face_scores": st["slot_face_scores"],
                              "mouth_skin": st["mouth_skin"]})
                 alert_now[doll] = live[doll].update(t, st[args.preview] == "hidden")
@@ -375,7 +385,7 @@ def main():
     videos = load_annotations()
     names = args.videos or sorted(videos)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    run_pose = detector = None
+    run_pose = detector = det_v5 = None
     all_results = []
     for name in names:
         ann = videos[name]
@@ -388,7 +398,8 @@ def main():
             if run_pose is None:
                 run_pose = load_rtmo()
                 detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
-            rows, duration = run_video(name, ann, args, run_pose, detector)
+                det_v5 = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), infant_face_v5.FACE_TH_V5)
+            rows, duration = run_video(name, ann, args, run_pose, detector, det_v5)
         results, alerts = evaluate(rows, ann["segments"], args.on, args.off, args.blip)
         report(name, results, args.on, args.off, args.blip)
         draw_timeline(name, rows, alerts, ann["segments"], duration, OUT_DIR / f"{name}_timeline.png")
