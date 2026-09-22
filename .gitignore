@@ -20,7 +20,7 @@ hailo/calib/
 # YuNet 很小、授權 MIT，保留（這行要放在上面幾行之後才會生效）
 !model/face_detection_yunet_2023mar.onnx
 
-# 只留在本機的文件
-docs/context.md
+# 只留在本機的文件（私有文件放 docs/private/：context、decisions、status）
+docs/private/
 docs/*.docx
 docs/archive/
