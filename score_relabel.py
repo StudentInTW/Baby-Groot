@@ -65,6 +65,18 @@ def main():
             posture[r["posture"]][0] += yes(r["alert"])
             posture[r["posture"]][1] += 1
         print("    誤報依睡姿：" + "、".join(f"{p} {a}/{t}（{a / t:.0%}）" for p, (a, t) in sorted(posture.items())))
+        # 場景相關子集：午睡室針對躺姿（Supine+Prone）；validate100 是調參時的保留集（train600 調、validate 報）
+        def rate(rows):
+            a, n = sum(yes(r["alert"]) for r in rows), len(rows)
+            return f"{a}/{n}（{a / n:.1%}）" if n else "—"
+        vis = by[1]
+        lying = [r for r in vis if r["posture"] in ("Supine", "Prone")]
+        if any(r.get("split") for r in vis):  # 有 split 欄才印（新版 eval_syrip 才有）
+            val = [r for r in vis if r.get("split") == "validate100"]
+            print(f"    誤報（場景子集）：躺姿 {rate(lying)}｜validate100 {rate(val)}"
+                  f"｜validate100+躺姿 {rate([r for r in val if r['posture'] in ('Supine', 'Prone')])}")
+        else:
+            print(f"    誤報（場景子集）：躺姿 {rate(lying)}")
 
 
 if __name__ == "__main__":

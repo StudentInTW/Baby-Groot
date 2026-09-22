@@ -72,6 +72,7 @@ def load_syrip():
             samples.append({
                 "file": im["file_name"],
                 "path": f"SyRIP_Posture/images/{split}/{im['file_name']}",
+                "split": split,                                    # train600 調參、validate100 報數字
                 "posture": im["posture"],
                 "box": np.array([x, y, x + w, y + h]),
                 "face_visible": int((k[:3, 2] == 2).sum()) >= 2,  # 鼻子、雙眼至少兩個標為看得到
@@ -223,7 +224,7 @@ def main():
             p = persons[best] if best >= 0 and ious[best] >= IOU_TH else None
             alert = p is not None and (p["tier"] == "alert" if args.face == "v5" else not p["faces"])
             rows[m].append({
-                "file": s["file"], "posture": s["posture"], "gt_face_visible": s["face_visible"],
+                "file": s["file"], "split": s["split"], "posture": s["posture"], "gt_face_visible": s["face_visible"],
                 "found": p is not None, "iou": round(ious[best], 3) if ious else 0.0,
                 "faces_in_image": len(faces), "faces_assigned": len(p["faces"]) if p else 0,
                 "alert": alert, "extra_persons": len(persons) - int(p is not None),

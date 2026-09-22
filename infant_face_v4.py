@@ -37,8 +37,11 @@ ORANGE = (0, 140, 255)
 EYE_PX = 64           # 口鼻檢查時把臉轉正、縮放成雙眼距離這麼多像素
 CROP_W, CROP_H, EYE_Y = 192, 224, 80  # 轉正後的小圖大小；雙眼中點放在 (CROP_W / 2, EYE_Y)
 SKIN_DE = 15          # 和膚色基準的色差（Lab ΔE）小於這個，算像皮膚
-MOUTH_SKIN_MIN = 0.2  # 下半臉像皮膚的比例低於這個 → 口鼻被蓋住。用娃娃照第 1、2 批定的：
+MOUTH_SKIN_MIN = 0.2  # 鼻／人中像皮膚的比例低於這個 → 口鼻被蓋住。用娃娃照第 1、2 批定的：
                       # 被衣領、被子、抱枕蓋住的 ≤ 0.04，看得到的最低 0.30（第 3 批當驗證）
+MIN_EYE_PX = 22       # 原圖雙眼距離小於這麼多像素就不檢查（回傳 1.0＝當看得到）：小臉取樣只有幾個像素、
+                      # 一團糊，硬檢查會誤判成被蓋住（SyRIP 一半以上眼距 < 20px，是 v4 誤報爆掉的主因之一）。
+                      # 娃娃臉都很大、遠不到這個門檻，不受影響
 
 
 class Face(tuple):
@@ -107,11 +110,15 @@ def _disk(lab, center, r):
 
 
 def mouth_skin_ratio(img, lm):
-    """把臉依雙眼轉正，回傳下半臉（鼻尖上方一點到嘴下方）有多少比例像眉毛上方的膚色。"""
+    """臉太小不檢查（回傳 1.0＝當看得到）；否則把臉依雙眼轉正，回傳「鼻尖到人中」
+    （只看鼻子和人中、避開嘴巴——張嘴哭的暗色嘴腔會被誤判成非皮膚）有多少比例像眉毛上方的膚色。
+
+    2026/9/23 改良（原本看到嘴巴下方、也不管臉多小 → SyRIP 真實嬰兒誤報 6.1%→16.6%）：
+    (1) 臉太小（眼距 < MIN_EYE_PX）直接跳過；(2) 取樣區只到嘴上方（人中），不含嘴巴。"""
     r_eye, l_eye = lm[0], lm[1]
     d = float(np.linalg.norm(l_eye - r_eye))
-    if d < 1:
-        return 0.0
+    if d < MIN_EYE_PX:      # 小臉不檢查：取樣太少會誤判
+        return 1.0
     mid = (r_eye + l_eye) / 2
     angle = float(np.degrees(np.arctan2(l_eye[1] - r_eye[1], l_eye[0] - r_eye[0])))
     M = cv2.getRotationMatrix2D((float(mid[0]), float(mid[1])), angle, EYE_PX / d)
@@ -129,12 +136,16 @@ def mouth_skin_ratio(img, lm):
         _disk(lab, (cx - 0.45 * e, EYE_Y - 0.35 * e), 0.12 * e),
         _disk(lab, (cx + 0.45 * e, EYE_Y - 0.35 * e), 0.12 * e),
     ]), axis=0)
-    y0, y1 = int(max(0, nose[1] - 0.15 * e)), int(min(CROP_H, mouth[1] + 0.25 * e))
-    x0, x1 = int(cx - 0.55 * e), int(cx + 0.55 * e)
-    lower = lab[y0:y1, x0:x1].reshape(-1, 3)
-    if len(lower) == 0:
+    # 只取鼻尖到人中（嘴上方）；嘴巴排除
+    y0 = int(max(0, nose[1] - 0.10 * e))
+    y1 = int(min(CROP_H, mouth[1] - 0.15 * e))
+    if y1 - y0 < 0.15 * e:   # 鼻嘴太近（側臉/小臉）：退回鼻尖下方一小塊
+        y1 = int(min(CROP_H, nose[1] + 0.35 * e))
+    x0, x1 = int(cx - 0.40 * e), int(cx + 0.40 * e)
+    region = lab[y0:y1, x0:x1].reshape(-1, 3)
+    if len(region) == 0:
         return 0.0
-    return float((np.linalg.norm(lower - ref, axis=1) < SKIN_DE).mean())
+    return float((np.linalg.norm(region - ref, axis=1) < SKIN_DE).mean())
 
 
 def drop_covered_faces(img, persons):
