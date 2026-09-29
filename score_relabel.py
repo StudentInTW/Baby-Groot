@@ -10,10 +10,11 @@ score_relabel.py
 用法：
     uv run python score_relabel.py                # 標註檔預設 outputs/relabel_syrip_labels.csv
     uv run python score_relabel.py 別的標註.csv
+    uv run python score_relabel.py --eval-dir outputs/syrip_eval_gray   # 算灰階／關燈那份（eval_syrip.py --gray/--dim）
 """
 
+import argparse
 import csv
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -40,15 +41,20 @@ def load_truth(labels_path):
 
 
 def main():
-    key, truth = load_truth(Path(sys.argv[1]) if len(sys.argv) > 1 else LABELS)
-    print(f"人工標註 {len(truth)}/{len(key)} 張")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("labels", nargs="?", type=Path, default=LABELS, help="人工重標檔（預設 outputs/relabel_syrip_labels.csv）")
+    ap.add_argument("--eval-dir", type=Path, default=EVAL_DIR,
+                    help="要重算的評估結果資料夾（預設 outputs/syrip_eval；灰階／關燈的在 outputs/syrip_eval_<條件>）")
+    args = ap.parse_args()
+    key, truth = load_truth(args.labels)
+    print(f"人工標註 {len(truth)}/{len(key)} 張｜評估結果：{args.eval_dir}")
     for reason, desc in (("false_alarm", "系統判 ALERT、原標註看得到"), ("gt_hidden", "原標註看不到"),
                          ("ok_sample", "系統都判 OK 的抽查")):
         c = Counter(truth[k["file"]] for k in key if k["reason"] == reason and k["file"] in truth)
         print(f"  {desc}：" + "、".join(f"{NAMES[lab]} {c[lab]}" for lab in (1, 2, 3)))
 
     yes = lambda v: v == "True"
-    for path in sorted(EVAL_DIR.glob("*.csv")):
+    for path in sorted(args.eval_dir.glob("*.csv")):
         found = [r for r in read_csv(path) if yes(r["found"])]
         label = {r["file"]: truth.get(r["file"], 1 if yes(r["gt_face_visible"]) else 3) for r in found}
         by = {lab: [r for r in found if label[r["file"]] == lab] for lab in (1, 2, 3)}

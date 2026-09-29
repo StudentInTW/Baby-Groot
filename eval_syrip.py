@@ -25,6 +25,9 @@ outputs/syrip_eval/ 裡的東西不可放進簡報、影片或 GitHub，簡報�
     uv run python eval_syrip.py --face v4 --models rtmo  # 人臉判斷 v4，只跑 RTMO（輸出 rtmo_v4.csv）
     uv run python eval_syrip.py --limit 10            # 先跑 10 張試試
     uv run python eval_syrip.py --models yolov8 rtmo  # 只跑指定模型
+    uv run python eval_syrip.py --face v3 --models rtmo --gray --dim 0.3
+        # 模擬補光不夠的 IR 夜視（灰階＋關燈，見 degrade.py）：輸出到 outputs/syrip_eval_gray_dim0.3/，
+        # 不會蓋掉原圖的結果；重算誤報用 score_relabel.py --eval-dir outputs/syrip_eval_gray_dim0.3
 """
 
 import argparse
@@ -45,6 +48,7 @@ from face_common import (  # v2 的人臉偵測、配對規則與門檻
     FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
 )
 import infant_face_v5
+from degrade import degrade, describe, tag
 from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
 from infant_face_v4 import detect_faces_v4, drop_covered_faces
 
@@ -151,8 +155,8 @@ def save_sheet(tiles, path, cols=4):
     cv2.imwrite(str(path), np.vstack([np.hstack(tiles[i:i + cols]) for i in range(0, len(tiles), cols)]))
 
 
-def report(rows, secs, n_images, face):
-    print(f"\n== SyRIP_Posture：{n_images} 張真實嬰兒圖｜人臉判斷 {face}"
+def report(rows, secs, n_images, face, condition="原圖"):
+    print(f"\n== SyRIP_Posture：{n_images} 張真實嬰兒圖｜人臉判斷 {face}｜{condition}"
           f"（人臉偵測平均 {1000 * secs['face'] / n_images:.0f} ms／張）")
     for m, rs in rows.items():
         found = [r for r in rs if r["found"]]
@@ -179,6 +183,8 @@ def main():
     ap.add_argument("--models", nargs="+", default=["yolov8", "rtmpose", "rtmo"])
     ap.add_argument("--face", choices=["v2", "v3", "v4", "v5"], default="v2")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張（0＝全部）")
+    ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
+    ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
     args = ap.parse_args()
 
     z, samples = load_syrip()
@@ -188,13 +194,16 @@ def main():
     # v5 要抓側臉，偵測門檻降到 FACE_TH_V5（0.3），再靠三級分類擋假臉
     face_th = infant_face_v5.FACE_TH_V5 if args.face == "v5" else FACE_SCORE_TH
     face_det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), face_th)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    cond = tag(args.gray, args.dim)  # 灰階／關燈的結果另外放，不蓋掉原圖的（score_relabel.py 預設讀原圖那份）
+    out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = {m: [] for m in models}
     sheets = {m: [] for m in models}
     secs = defaultdict(float)
     for n, s in enumerate(samples, 1):
-        img = cv2.imdecode(np.frombuffer(z.read(s["path"]), np.uint8), cv2.IMREAD_COLOR)
+        img = degrade(cv2.imdecode(np.frombuffer(z.read(s["path"]), np.uint8), cv2.IMREAD_COLOR),
+                      args.gray, args.dim)
         if args.face == "v2":  # v2 的臉跟姿態模型無關，每張圖找一次就好
             t = time.perf_counter()
             faces = detect_faces(face_det, img)
@@ -238,12 +247,12 @@ def main():
 
     suffix = "" if args.face == "v2" else f"_{args.face}"
     for m, rs in rows.items():
-        with open(OUT_DIR / f"{m}{suffix}.csv", "w", newline="", encoding="utf-8") as f:
+        with open(out_dir / f"{m}{suffix}.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rs[0]))
             writer.writeheader()
             writer.writerows(rs)
-        save_sheet(sheets[m], OUT_DIR / f"{m}{suffix}_false_alarms.jpg")
-    report(rows, secs, len(samples), args.face)
+        save_sheet(sheets[m], out_dir / f"{m}{suffix}_false_alarms.jpg")
+    report(rows, secs, len(samples), args.face, describe(args.gray, args.dim))
 
 
 if __name__ == "__main__":

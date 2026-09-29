@@ -26,6 +26,7 @@
   - SyRIP（測誤報）：`eval_syrip.py --face v3` 跑分 → `score_relabel.py` 用人工標註重算真實的誤報率。注意用 `--limit` 試跑會覆蓋 `outputs/syrip_eval/` 裡的 CSV。
   - 娃娃影片（測床位模式和警示狀態機）：`eval_video.py`，床位在 `doll_video_slots.csv`、時間軸在 `doll_video_labels.csv`（只列手不在畫面裡的片段）。結果見 `docs/影片測試結果.md`。
   - 娃娃擺拍（測危險情境召回）：`eval_doll.py`，標註在 `doll_labels.csv`。**計分單位是「每隻娃娃」**，不是每張照片——同框兩隻都危險、只抓到一隻時，用整張圖算會被判對。結果和失敗模式見 `docs/娃娃測試結果.md`。
+  - 灰階／暗光（模擬 IR 夜視，選跑）：三支都有 `--gray`、`--dim 0.3`（`degrade.py`），結果另外放 `_<條件>` 的檔名／資料夾、不蓋掉原圖基準；SyRIP 用 `score_relabel.py --eval-dir outputs/syrip_eval_<條件>` 算。**灰階下口鼻膚色檢查（v4/v5）失效**，結果見 `docs/娃娃測試結果.md` §8。
 - **Stage I 不訓練模型**：用現成、授權寬鬆的模型加上演算法設計。
 
 ## 範圍護欄

@@ -19,11 +19,13 @@ eval_video.py
 看得到要持續 --blip 秒以上才會把「看不到」的計時歸零（防閃爍）。
 
 用法：
-    uv run python eval_video.py                  # 跑 doll_video_labels.csv 裡所有影片
+    uv run python eval_video.py                  # 跑 doll_video_labels.csv 裡所有娃娃影片（不含 OTHER_VIDEOS）
     uv run python eval_video.py IMG_8150         # 只跑一支
+    uv run python eval_video.py 嬰兒翻身          # 非娃娃的影片（OTHER_VIDEOS）要指定名稱才跑
     uv run python eval_video.py --reuse          # 不重跑偵測，用上次存的每幀結果重算（改 --on/--off 時用）
+    uv run python eval_video.py --gray --dim 0.3 # 模擬補光不夠的 IR 夜視（見 degrade.py）
 輸出：outputs/video_eval/<影片>_frames.csv（每幀判定）、<影片>_timeline.png（時間軸對照圖）、
-      <影片>_preview.mp4（標註影片，縮小版）
+      <影片>_preview.mp4（標註影片，縮小版）；--gray/--dim 的結果放 outputs/video_eval_<條件>/
 """
 
 import argparse
@@ -41,11 +43,16 @@ import numpy as np
 import infant_face_v3
 import infant_face_v4
 import infant_face_v5
+from degrade import degrade, describe, tag
 from face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, assign_faces, put_label
 from infant_face_v3 import load_rtmo, make_persons
 
 ROOT = Path(__file__).parent
 VIDEO_DIR = ROOT / "dataset" / "doll_video"
+# 不是娃娃的影片：檔案不在 doll_video/，要指定名稱才跑（不混進娃娃影片的合計，數字才跟之前的對得上）
+OTHER_VIDEOS = {
+    "嬰兒翻身": ROOT / "dataset" / "嬰兒翻身.mp4",  # 嘉晏哥哥提供的 AI 生成影片：灰階夜視俯拍，一個嬰兒仰→側→趴
+}
 LABELS = ROOT / "doll_video_labels.csv"
 SLOTS = ROOT / "doll_video_slots.csv"
 OUT_DIR = ROOT / "outputs" / "video_eval"
@@ -295,7 +302,8 @@ def draw_timeline(name, rows, alerts, segments, duration, out_path):
                     cv2.rectangle(img, (x0, y + row_h // 2 + 1), (x1, y + row_h - 3), (30, 30, 170), -1)
             y += row_h
         y += gap
-    cv2.imwrite(str(out_path), img)
+    # 影片名稱可能是中文：cv2.imwrite 在 Windows 寫不了非 ASCII 路徑（回報成功、其實沒存），改用 imencode
+    cv2.imencode(".png", img)[1].tofile(str(out_path))
 
 
 def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
@@ -326,7 +334,7 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
 
 def run_video(name, ann, args, run_pose, detector, det_v5):
     """逐幀偵測（每秒 --fps 幀），存每幀結果和標註影片。回傳 rows、影片長度。"""
-    cap = cv2.VideoCapture(str(VIDEO_DIR / f"{name}.MOV"))
+    cap = cv2.VideoCapture(str(OTHER_VIDEOS.get(name, VIDEO_DIR / f"{name}.MOV")))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     step = max(1, round(src_fps / args.fps))
@@ -338,6 +346,7 @@ def run_video(name, ann, args, run_pose, detector, det_v5):
             break
         if i % step == 0:
             _, frame = cap.retrieve()
+            frame = degrade(frame, args.gray, args.dim, seed=i)  # 雜訊每幀不同（像真的感測器），seed＝幀號可重現
             t = i / src_fps
             states, persons, faces = detect(run_pose, detector, det_v5, frame, slots, rots)
             alert_now = {}
@@ -351,7 +360,7 @@ def run_video(name, ann, args, run_pose, detector, det_v5):
                 alert_now[doll] = live[doll].update(t, st[args.preview] == "hidden")
             pv = draw_preview(frame, t, slots, persons, faces, alert_now, segments, args.preview)
             if writer is None:
-                writer = cv2.VideoWriter(str(OUT_DIR / f"{name}_preview.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
+                writer = cv2.VideoWriter(str(args.out_dir / f"{name}_preview.mp4"), cv2.VideoWriter_fourcc(*"mp4v"),
                                          args.fps, (pv.shape[1], pv.shape[0]))
             writer.write(pv)
             if len(rows) // len(slots) % 50 == 0:
@@ -360,7 +369,7 @@ def run_video(name, ann, args, run_pose, detector, det_v5):
     cap.release()
     if writer is not None:
         writer.release()
-    with open(OUT_DIR / f"{name}_frames.csv", "w", newline="", encoding="utf-8-sig") as fh:
+    with open(args.out_dir / f"{name}_frames.csv", "w", newline="", encoding="utf-8-sig") as fh:
         wr = csv.DictWriter(fh, fieldnames=list(rows[0]))
         wr.writeheader()
         wr.writerows(rows)
@@ -379,18 +388,23 @@ def main():
     ap.add_argument("--limit-sec", type=float, default=0, help="只跑前幾秒（試跑用；會覆蓋上次的輸出）")
     ap.add_argument("--preview", choices=MODES[1:], default="v3_slot",
                     help="標註影片的床位框顏色依哪一種判定（預設 v3_slot；v4 還沒通過真實嬰兒的誤報測試）")
+    ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
+    ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
     args = ap.parse_args()
 
     infant_face_v3.DET_TH = args.det_th
     videos = load_annotations()
-    names = args.videos or sorted(videos)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    names = args.videos or sorted(v for v in videos if v not in OTHER_VIDEOS)
+    cond = tag(args.gray, args.dim)  # 灰階／關燈的結果另外放，不蓋掉原圖的
+    args.out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"影像條件：{describe(args.gray, args.dim)}")
     run_pose = detector = det_v5 = None
     all_results = []
     for name in names:
         ann = videos[name]
         if args.reuse:
-            rows = read_csv(OUT_DIR / f"{name}_frames.csv")
+            rows = read_csv(args.out_dir / f"{name}_frames.csv")
             for r in rows:
                 r["t"] = float(r["t"])
             duration = max(r["t"] for r in rows) + 1
@@ -402,11 +416,11 @@ def main():
             rows, duration = run_video(name, ann, args, run_pose, detector, det_v5)
         results, alerts = evaluate(rows, ann["segments"], args.on, args.off, args.blip)
         report(name, results, args.on, args.off, args.blip)
-        draw_timeline(name, rows, alerts, ann["segments"], duration, OUT_DIR / f"{name}_timeline.png")
+        draw_timeline(name, rows, alerts, ann["segments"], duration, args.out_dir / f"{name}_timeline.png")
         all_results += results
     if len(names) > 1:
-        summarize(all_results, f"合計 {len(names)} 支影片")
-    print(f"\n輸出：outputs/video_eval/（每幀判定 *_frames.csv、時間軸對照 *_timeline.png、標註影片 *_preview.mp4）")
+        summarize(all_results, f"合計 {len(names)} 支影片｜{describe(args.gray, args.dim)}")
+    print(f"\n輸出：outputs/{args.out_dir.name}/（每幀判定 *_frames.csv、時間軸對照 *_timeline.png、標註影片 *_preview.mp4）")
 
 
 if __name__ == "__main__":

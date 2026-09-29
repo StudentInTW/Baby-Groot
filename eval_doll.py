@@ -28,7 +28,8 @@ eval_doll.py
 
 用法：
     uv run python eval_doll.py                     # 原圖
-    uv run python eval_doll.py --dim 0.3           # 模擬關燈（亮度降到 30%，見 dim_image）
+    uv run python eval_doll.py --dim 0.3           # 模擬關燈（亮度降到 30%，見 degrade.py）
+    uv run python eval_doll.py --gray              # 模擬 IR 夜視（灰階）；可以跟 --dim 一起用
     uv run python eval_doll.py --max-side 1280     # 模擬解析度較低的天花板攝影機
     uv run python eval_doll.py --save-vis          # 每張都存標註圖（預設只存判錯的）
     uv run python eval_doll.py --face v4 --det-th 0.15  # v4（v3＋口鼻檢查）＋建議的找人門檻
@@ -53,14 +54,13 @@ import infant_face_v4
 from face_common import (
     FACE_MODEL, FACE_SCORE_TH, GREEN, MIN_BODY_KPTS, RED, YELLOW, assign_faces, put_label,
 )
+from degrade import degrade, describe
 from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
 
 ROOT = Path(__file__).parent
 IMG_DIR = ROOT / "dataset" / "infant_jpg_without_video"
 LABELS = ROOT / "doll_labels.csv"
 OUT_DIR = ROOT / "outputs" / "doll_eval"
-GAMMA = 2.2      # 模擬關燈時先把像素轉回線性亮度再乘，比直接乘像素值接近真實相機
-DIM_NOISE = 2.0  # 暗處的感測器雜訊（高斯，標準差／255）
 
 
 def load_labels():
@@ -72,15 +72,6 @@ def load_labels():
         r["x"], r["y"] = float(r["x"]), float(r["y"])
         by_file[r["file"]].append(r)
     return by_file
-
-
-def dim_image(img, factor):
-    """模擬關燈：在線性亮度上乘 factor，再加一點雜訊。
-    這只是近似，真的暗光還要拍過才算數（現有照片全是開燈拍的）。"""
-    lin = (img.astype(np.float32) / 255.0) ** GAMMA * factor
-    out = 255.0 * lin ** (1 / GAMMA)
-    out += np.random.default_rng(0).normal(0, DIM_NOISE, out.shape)
-    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def match(persons, dolls, w, h):
@@ -246,6 +237,7 @@ def report(rows, secs, n_images, title):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
+    ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
     ap.add_argument("--max-side", type=int, default=0, help="長邊縮到這個像素（0＝原圖）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張")
     ap.add_argument("--save-vis", action="store_true", help="每張都存標註圖（預設只存判錯的）")
@@ -269,7 +261,8 @@ def main():
     files = sorted(by_file)[:args.limit or None]
     knobs = [("dim", args.dim), ("px", args.max_side), ("det", args.det_th),
              ("face", args.face_th), ("hface", args.head_face_th)]
-    suffix = ("_v4" if args.face == "v4" else "") + "".join(f"_{k}{v:g}" for k, v in knobs if v)
+    suffix = ("_v4" if args.face == "v4" else "") + ("_gray" if args.gray else "") \
+        + "".join(f"_{k}{v:g}" for k, v in knobs if v)
     vis_dir = OUT_DIR / f"vis{suffix}"
     vis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -286,8 +279,7 @@ def main():
             s = min(1.0, args.max_side / max(img.shape[:2]))
             if s < 1:
                 img = cv2.resize(img, (round(img.shape[1] * s), round(img.shape[0] * s)))
-        if args.dim:
-            img = dim_image(img, args.dim)
+        img = degrade(img, args.gray, args.dim)
         h, w = img.shape[:2]
 
         t = time.perf_counter()
@@ -344,7 +336,7 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
     title = ("娃娃擺拍｜v4（v3＋口鼻檢查）" if args.face == "v4" else "娃娃擺拍｜v3（RTMO＋YuNet）") \
-        + (f"｜模擬關燈 ×{args.dim:g}" if args.dim else "") \
+        + (f"｜{describe(args.gray, args.dim)}" if args.gray or args.dim else "") \
         + (f"｜長邊 {args.max_side}px" if args.max_side else "｜原圖 4284×5712") \
         + (f"｜找人門檻 {args.det_th:g}" if args.det_th else "") \
         + (f"｜整張圖人臉門檻 {args.face_th:g}" if args.face_th else "") \

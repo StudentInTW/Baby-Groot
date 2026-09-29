@@ -31,6 +31,7 @@
 ├── eval_video.py                # 用娃娃影片評估床位模式：每個床位的警示狀態機，跟時間軸比對
 ├── doll_video_labels.csv        # 娃娃影片的時間軸標註：每段狀態的開始、結束秒數
 ├── doll_video_slots.csv         # 娃娃影片的床位：每隻娃娃的頭部範圍和頭朝哪邊
+├── degrade.py                   # 模擬暗光／IR 夜視（灰階、關燈），三支評估的 --gray、--dim 共用
 ├── make_relabel_set.py          # 產生 SyRIP 誤報圖人工重標的資料包
 ├── score_relabel.py             # 用人工重標結果重算誤報率、漏判率
 ├── main.py                      # uv init 產生的基本入口，目前非主流程
@@ -39,6 +40,7 @@
 │   ├── SyRIP_Posture.zip        # ACLab 提供：700 張真實圖＋睡姿標籤
 │   ├── infant_jpg_without_video/  # 娃娃擺拍照片（自己拍的，可放進成品；照片本身不進 Git）
 │   ├── doll_video/              # 娃娃影片和 Harry 的時間軸說明（.txt）
+│   ├── 嬰兒翻身.mp4             # AI 生成的灰階夜視俯拍（嘉晏哥哥提供），一個嬰兒仰→側→趴；只供內部評估
 │   ├── infant_1.jpg
 │   ├── infant_2.png
 │   └── infant_3.png
@@ -124,8 +126,22 @@ uv run python eval_video.py                          # 全部影片（每支約 
 uv run python eval_video.py --reuse --on 3 --off 3   # 不重跑偵測，只換警示規則重算
 ```
 
-每秒取 5 幀，每個床位（`doll_video_slots.csv`）一個警示狀態機，跟時間軸（`doll_video_labels.csv`，只列手不在畫面裡的乾淨片段）比對，比較 v3、v3＋床位、v4＋床位。
+每秒取 5 幀，每個床位（`doll_video_slots.csv`）一個警示狀態機，跟時間軸（`doll_video_labels.csv`，只列手不在畫面裡的乾淨片段）比對，比較 v3、v3＋床位、v4＋床位、v5＋床位。
 結果在 `outputs/video_eval/`：時間軸對照圖、標註影片、每幀判定。數字見 [`docs/影片測試結果.md`](./docs/影片測試結果.md)。
+不給影片名稱時只跑娃娃影片；非娃娃的 `嬰兒翻身`（AI 生成的灰階夜視畫面）要指定名稱：`uv run python eval_video.py 嬰兒翻身`。
+
+## 模擬暗光／IR 夜視（灰階）
+
+午睡室拉窗簾偏暗，實機多半是紅外線夜視的灰階畫面。三支評估都能加 `--gray`（去掉顏色）和 `--dim 0.3`（關燈：亮度 ×0.3 加雜訊），可以一起用；處理方式在 `degrade.py`。
+
+```bash
+uv run python eval_syrip.py --face v3 --models rtmo --gray --dim 0.3   # 輸出到 outputs/syrip_eval_gray_dim0.3/
+uv run python score_relabel.py --eval-dir outputs/syrip_eval_gray_dim0.3
+uv run python eval_doll.py --det-th 0.15 --gray --dim 0.3              # 輸出 dolls_gray_dim0.3_det0.15.csv
+uv run python eval_video.py --gray --dim 0.3                           # 輸出到 outputs/video_eval_gray_dim0.3/
+```
+
+灰階／關燈的結果放在另外的檔案或資料夾，不會蓋掉原圖的基準。這只是近似：真的近紅外線下皮膚偏亮、布料反光不同，要驗證還是得用夜視攝影機實拍。
 
 ## SyRIP 誤報圖人工重標
 
