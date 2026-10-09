@@ -380,7 +380,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("videos", nargs="*", help="影片名稱（不含副檔名）；不給就跑標註檔裡全部")
     ap.add_argument("--fps", type=float, default=5, help="每秒取幾幀跑偵測（預設 5）")
-    ap.add_argument("--on", type=float, default=2, help="連續幾秒看不到口鼻才警示（預設 2）")
+    ap.add_argument("--on", type=float, default=3, help="連續幾秒看不到口鼻才警示（預設 3；2026/10/9 由 2 改 3，娃娃影片結果相同）")
     ap.add_argument("--off", type=float, default=2, help="連續幾秒看得到口鼻才解除警示（預設 2）")
     ap.add_argument("--blip", type=float, default=1, help="看得到要持續幾秒才把看不到的計時歸零（預設 1；0＝不防閃爍）")
     ap.add_argument("--det-th", type=float, default=0.15, help="RTMO 找人門檻（預設 0.15，見 docs/娃娃測試結果.md §7）")

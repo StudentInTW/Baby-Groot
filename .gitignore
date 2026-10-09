@@ -1,5 +1,6 @@
 # 虛擬環境、快取、log
 .venv/
+.venv-vlm/
 __pycache__/
 *.pyc
 *.log
