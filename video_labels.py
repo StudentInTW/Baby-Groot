@@ -9,7 +9,8 @@ video_labels.py
                                                    格式相同，只在本機評估；名稱不寫進程式和公開文件
 
 床位檔欄位：video, doll（床位名稱）, x0, y0, x1, y1（床位範圍，畫面比例）, rot（把床位轉正要轉幾度）,
-           head_x0, head_y0, head_x1, head_y1（床頭那一端，VLM 看這裡；空白＝用床位範圍）, note
+           head_x0, head_y0, head_x1, head_y1（床頭那一端，VLM 看這裡；空白＝用床位範圍）,
+           empty_ref（空床參考畫面在影片第幾秒，crib_context.py 用；空白＝沒有）, note
 時間軸欄位：video, doll, start, end（秒）, label（ok 口鼻看得到／alert 看不到／empty 空床）,
            staged（拍攝意圖：safe／warn／danger／prone＝趴睡但口鼻看得到）, note
 """
@@ -36,7 +37,8 @@ def _num(value):
 
 def load():
     """回傳 {影片: {"slots": {床位: 設定}, "segments": [段落, ...], "local": 是否來自 local_ 標註檔}}。
-    床位設定：rect (x0, y0, x1, y1)、rot、head（床頭範圍或 None）、note。段落的 start/end 已轉成秒數。"""
+    床位設定：rect (x0, y0, x1, y1)、rot、head（床頭範圍或 None）、empty_ref（秒或 None）、note。
+    段落的 start/end 已轉成秒數。"""
     videos = defaultdict(lambda: {"slots": {}, "segments": [], "local": False})
     for local, path in enumerate(SLOT_FILES):
         if not path.exists():
@@ -47,6 +49,7 @@ def load():
                 "rect": tuple(float(r[k]) for k in ("x0", "y0", "x1", "y1")),
                 "rot": int(r["rot"]),
                 "head": head if None not in head else None,
+                "empty_ref": _num(r.get("empty_ref")),
                 "note": r.get("note", ""),
             }
             videos[r["video"]]["local"] |= bool(local)
