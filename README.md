@@ -1,166 +1,171 @@
-# 托嬰中心午睡安全監看 · ASUS UGen AI League
+# 月子中心嬰兒室安全輔助 · ASUS UGen AI League
 
-一顆邊緣 AI 晶片（ASUS UGen300 / Hailo-10H），同時監測整間托嬰中心午睡室的多名嬰兒，
-即時標記出現**趴睡、口鼻遮蔽或異常姿勢**的孩子。影像全程不出教室——隱私是硬約束也是賣點。
-定位為輔助托育人員的 co-pilot，不是醫療器材。
+**English summary.** Many postpartum care centres in Taiwan already film each crib in the nursery and stream it to parents.
+Nobody watches those streams continuously: one nurse looks after several newborns. Our edge box (ASUS UGen300 /
+Hailo-10H) is designed to read those existing per-crib cameras and, when a baby's nose and mouth stay out of sight for 3 seconds
+(face-down, or covered by a blanket or swaddle), quietly tells the nurse first. It is an observation aid, not a medical
+device, and it makes no claims about SIDS.
 
-參賽賽道：Battlefield Lightning（輕量運算組）。Stage I 截止：**2026/10/14**（英文簡報 + ≤3 分鐘英文影片，用筆電做，不需硬體）。
+- **How it works**: RTMO finds people and keypoints → each head is rotated upright → YuNet looks for a face; in crib mode
+  the whole crib is also searched directly, because a blanket-covered body often hides the person from the pose model.
+  A per-crib state machine raises an alert after 3 s without a visible airway. A second, independent check, a 2B
+  vision-language model (Qwen2-VL-2B, which Hailo builds for the 10H), looks at the head crop: it can add a
+  "please look", never cancel an alert. Caregiving (an adult at the crib) pauses the timer, and an empty crib turns gray
+  instead of red when it matches its empty reference image.
+- **Results so far (proxies, no real nursery data yet)**: real infant photos (SyRIP, internal only) 6.1% false alerts,
+  98.6% alerted when the airway is hidden; six doll videos, 3-s rule at 1 FPS per crib: 31/41 danger segments caught (76%),
+  7/40 false alerts; two new per-crib clips: 3/7 caught, 0/7 false alerts, the misses include an ear taken for a face;
+  laptop CPU handles about 8 cribs at 1 FPS; the VLM separated safe from dangerous head crops with AUC 0.98 on clips it
+  had never seen. Details: [`docs/architecture.md`](./docs/architecture.md), [`docs/影片測試結果.md`](./docs/影片測試結果.md).
+- **Run it**: `uv sync`, then `uv run python infant_face_v3.py your_image.jpg`. Evaluation scripts are listed below.
+  The datasets and videos are not in the repo (licensing and privacy); doll images are our own.
 
 ---
 
+很多產後護理之家（月子中心）的嬰兒室，本來就有每床一支的直播鏡頭（給家長看）。一台邊緣裝置（ASUS UGen300／Hailo-10H）
+判讀這些鏡頭：寶寶臉朝下、口鼻被被子或包巾蓋住，連續 3 秒看不到口鼻，就先安靜通知護理師——**讓護理師比家長先知道**。
+AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器材，不宣稱預防 SIDS。
+
+參賽賽道：Battlefield Lightning。Stage I 截止 **2026/10/14 17:00**（英文簡報＋≤3 分鐘英文影片，用筆電做，不需硬體）。
+
+> **2026/10/8 方向轉向**：原題目是「托嬰中心午睡安全監看」（一台裝置看整間午睡室）。訪談與參訪發現托嬰中心的監視器裝在高處、
+> 物理上看不到臉，孩子也多半已經 7–8 個月大；月子中心的每床鏡頭從正上方拍新生兒，正好看得到臉。程式不受影響：
+> 每支鏡頭只拍一張床，就是原本的「床位模式」。托嬰時期的問卷與訪談當成前導研究。
+
 ## 先讀這個
 
-**接手前先讀 [`docs/architecture.md`](./docs/architecture.md)** — 判斷流程、床位模式、三級輸出和 v1→v5 的演進；測試數字見 [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)、[`docs/影片測試結果.md`](./docs/影片測試結果.md)。
+[`docs/architecture.md`](./docs/architecture.md)：判斷流程、床位模式、床位情境（照護中、空床）、VLM 第二道檢查、v1→v5 的演進。
+測試數字：[`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)（擺拍照片）、[`docs/影片測試結果.md`](./docs/影片測試結果.md)（影片）。
 團隊內部的決策紀錄與現況在 `docs/private/`（不在 GitHub）。
 
 ## 資料夾結構
 
 ```
 .
-├── README.md                    # 操作入口
-├── pyproject.toml               # uv 專案設定與依賴
-├── uv.lock                      # 鎖定依賴版本
-├── infant_face_v3.py            # 風險前置實驗 v3：頭部轉正再找臉、合併重複框，姿態模型改用 RTMO（主力）
-├── infant_face_v4.py            # v4：v3 再加「口鼻檢查」——找到的臉，下半臉不像皮膚（被衣領、玩偶、被子蓋住）就不算數
-├── face_common.py               # v2、v3 共用：門檻、YuNet 找臉、配對、畫圖（不依賴 YOLOv8）
-├── infant_face_spike.py         # v2：整張圖找臉、YOLOv8（留著對照；要先 uv sync --group yolo）
+├── README.md
+├── pyproject.toml / uv.lock     # uv 專案設定與鎖定的依賴
+├── infant_face_v3.py            # 主力：RTMO 找人 → 頭部轉正 → YuNet 找臉 → 每個寶寶口鼻看不看得到（真實嬰兒基準）
+├── infant_face_v4.py            # 實驗：v3＋口鼻膚色檢查（擋「只露眼睛」的假臉）
+├── infant_face_v5.py            # 實驗：v4＋臉分三級（正臉 ok／側臉 warn／alert）
+├── face_common.py               # 共用：門檻、YuNet 找臉、配對、畫圖（不依賴 YOLOv8）
+├── infant_face_spike.py         # v2（留著對照；要先 uv sync --group yolo）
 ├── infant_prone_spike.py        # v1：關鍵點信心度規則（已知會漏報，留著對照；要先 uv sync --group yolo）
-├── eval_syrip.py                # 用 SyRIP 算偵測率／誤報率，比較 YOLOv8、RTMPose、RTMO（--face v2／v3／v4）
-├── eval_doll.py                 # 用娃娃擺拍照片評估，計分單位是「每隻娃娃」（偵測率、警示召回率、誤報率）
-├── doll_labels.csv              # 娃娃照片的人工標註：每隻娃娃的位置和口鼻看不看得到
-├── eval_video.py                # 用娃娃影片評估床位模式：每個床位的警示狀態機，跟時間軸比對
-├── doll_video_labels.csv        # 娃娃影片的時間軸標註：每段狀態的開始、結束秒數
-├── doll_video_slots.csv         # 娃娃影片的床位：每隻娃娃的頭部範圍和頭朝哪邊
-├── degrade.py                   # 模擬暗光／IR 夜視（灰階、關燈），三支評估的 --gray、--dim 共用
-├── make_relabel_set.py          # 產生 SyRIP 誤報圖人工重標的資料包
-├── score_relabel.py             # 用人工重標結果重算誤報率、漏判率
-├── main.py                      # uv init 產生的基本入口，目前非主流程
-├── dataset/                     # 測試影像與資料集（只供內部測試，不可放進成品）
-│   ├── SyRIP.zip                # ACLab 提供：嬰兒姿態（COCO 關鍵點）
-│   ├── SyRIP_Posture.zip        # ACLab 提供：700 張真實圖＋睡姿標籤
-│   ├── infant_jpg_without_video/  # 娃娃擺拍照片（自己拍的，可放進成品；照片本身不進 Git）
-│   ├── doll_video/              # 娃娃影片和 Harry 的時間軸說明（.txt）
-│   ├── 嬰兒翻身.mp4             # AI 生成的灰階夜視俯拍（嘉晏哥哥提供），一個嬰兒仰→側→趴；只供內部評估
-│   ├── infant_1.jpg
-│   ├── infant_2.png
-│   └── infant_3.png
-├── model/                       # 模型權重
-│   ├── yolov8n-pose.pt                    # 姿態模型（Ultralytics，AGPL-3.0）
-│   └── face_detection_yunet_2023mar.onnx  # 人臉偵測（OpenCV YuNet，MIT）
-├── outputs/                     # v2 輸出圖（<檔名>_face.jpg）；syrip_eval/ 是 SyRIP 評估結果（只供內部）；doll_eval/ 是娃娃測試結果
-├── docs/                        # 技術文件與測試結果
-│   ├── architecture.md          # 技術架構、判斷流程、v1→v5 演進（先讀這份）
-│   ├── 娃娃測試結果.md          # 娃娃擺拍測試的數字、失敗模式、灰階模擬
-│   ├── 影片測試結果.md          # 娃娃影片測試：床位模式、狀態機、灰階模擬、限制
+├── eval_syrip.py                # SyRIP 真實嬰兒圖：偵測率、誤報率、姿態模型比較
+├── make_relabel_set.py / score_relabel.py   # SyRIP 誤報圖人工重標、用重標結果重算
+├── eval_doll.py                 # 娃娃擺拍照片評估（計分單位是每隻娃娃）
+├── doll_labels.csv              # 娃娃照片的人工標註
+├── eval_video.py                # 娃娃影片評估：每個床位一個警示狀態機，跟時間軸比對
+├── crib_context.py              # 每床鏡頭的床位情境（原型）：照護中暫停計時、空床灰燈
+├── video_labels.py              # 影片標註的共用讀取
+├── doll_video_slots.csv         # 影片的床位：範圍、頭朝哪邊、床頭範圍（VLM 看這裡）、空床參考畫面
+├── doll_video_labels.csv        # 影片的時間軸：每段狀態的開始、結束秒數
+├── vlm_spike.py                 # VLM 第二道檢查的實驗（另一個虛擬環境，見下）
+├── bench_multistream.py         # CPU 多路負載測試：一台主機能同時判讀幾支每床鏡頭
+├── degrade.py                   # 模擬暗光／IR 夜視（灰階、關燈）
+├── sideface_spike.py / spike_posture.py     # 早期 spike：側臉幾何、關鍵點判睡姿（結論見 docs）
+├── model/face_detection_yunet_2023mar.onnx  # 人臉偵測（OpenCV YuNet，MIT）；其他權重第一次執行時自動下載
+├── docs/
+│   ├── architecture.md          # 技術架構（先讀這份）
+│   ├── 娃娃測試結果.md / 影片測試結果.md   # 測試數字、失敗模式、限制
 │   ├── 資料收集說明.md          # 娃娃照片與影片的拍攝規範
-│   ├── private/                 # 內部決策與現況（不在 GitHub）
-│   ├── demo規格.md              # 偵測到危險後怎麼通知、情報版、demo 影片腳本、訪談題目
-│   ├── 任務_HEF轉換測試.md      # 給士丞：模型轉 HEF 的可行性測試
-│   ├── GitHub教學.md            # 給隊友：從註冊 GitHub 到上傳自己的工作
-│   ├── ASUS UGen AI League_著作財產權授權暨肖像授權同意書.docx  # 官方同意書，每位隊員各簽一張
-│   └── archive/
-│       ├── 招募版提案.md        # 已歸檔；痛點數據與來源在這份
-│       └── 拍攝計畫_娃娃與影片.md  # 舊版拍攝清單（太細），已由資料收集說明取代
-└── .venv/                       # uv 建立的虛擬環境（不提交 Git）
-
+│   ├── demo規格.md              # 托嬰中心時期的通知方式與 demo 腳本（待改成月子版）
+│   ├── 任務_HEF轉換測試.md      # 模型轉 Hailo HEF 的可行性測試
+│   └── GitHub教學.md            # 給隊友：從註冊 GitHub 到上傳自己的工作
+├── dataset/                     # 不進 repo：SyRIP、娃娃照片、娃娃影片（doll_video/，含 Harry 的時間軸 .txt）
+└── outputs/                     # 不進 repo：評估結果
 ```
 
-## 從 GitHub 抓下來之後（隊友看這裡）
+**不在 GitHub 上的東西**（授權或隱私）：`dataset/`、`outputs/`、YuNet 以外的模型權重、`docs/private/`、`docs/archive/`、
+官方同意書、`local_video_*.csv`（不能公開的素材的標註，例如網路上找到的影片，只在本機評估）。需要的話跟 Harry 要。
 
-第一次用 GitHub 的話，照 [`docs/GitHub教學.md`](./docs/GitHub教學.md) 一步一步做（從註冊帳號開始）。
+## 安裝
 
-1. 接受 Harry 寄的 GitHub 邀請（repo 是私人的）。
-2. `git clone https://github.com/StudentInTW/infant-nap-guard.git`（或照 GitHub 教學用 SSH），進到資料夾。
-3. 安裝 [uv](https://docs.astral.sh/uv/)，然後執行 `uv sync` 裝好套件（約 200 MB，不含 YOLOv8 和 PyTorch）。
-4. 用自己的圖片試跑：`uv run python infant_face_v3.py 你的圖片.jpg`。第一次執行會自動下載 RTMO 模型（約 80 MB）。
+1. `git clone https://github.com/StudentInTW/infant-nap-guard.git`，進到資料夾。第一次用 GitHub 的隊友看 [`docs/GitHub教學.md`](./docs/GitHub教學.md)。
+2. 安裝 [uv](https://docs.astral.sh/uv/)，執行 `uv sync`（約 200 MB，不含 YOLOv8 和 PyTorch）。
+3. 試跑：`uv run python infant_face_v3.py 你的圖片.jpg`。第一次執行會自動下載 RTMO 模型（約 80 MB）。
 
-**不在 GitHub 上的東西**（授權或隱私的關係）：`dataset/`（SyRIP、測試圖、娃娃照片）、`outputs/`（評估結果）、`model/` 裡的 YOLOv8 權重、`docs/private/`（內部決策與現況）、`docs/archive/`、官方同意書。需要的話跟 Harry 要。
+輸出在 `outputs/<檔名>_v3.jpg`：紅框＝臉看不見（ALERT）、綠框＝臉看得到、黃框＝偵測到的臉。
+舊版 v1、v2 要用 YOLOv8（AGPL），先 `uv sync --group yolo`（會多裝 PyTorch）。
 
-## 怎麼跑風險前置實驗
+## 評估
 
-目的：驗證「每個嬰兒的臉看不看得到」——看不到就標 ALERT，產出可以給隊友看的截圖。
+### 娃娃影片：床位模式＋3 秒警示
 
 ```bash
-uv sync
-uv run python infant_face_v3.py
+uv run python eval_video.py                  # 全部娃娃影片（每支約 2–5 分鐘）
+uv run python eval_video.py IMG_8429         # 只跑一支
+uv run python eval_video.py --reuse --on 2   # 不重跑偵測，只換警示規則重算
 ```
 
-不給參數就跑 `dataset/` 裡所有圖片，也可以指定圖片，例如 `uv run python infant_face_v3.py dataset/infant_2.png`。
-輸出在 `outputs/<檔名>_v3.jpg`：紅框＝臉看不見（ALERT）、綠框＝臉看得到、黃框＝偵測到的臉、紅／綠圈＝用來配對臉的頭部範圍。
+每秒取 5 幀，每個床位一個警示狀態機（預設連續 3 秒看不到口鼻才警示、連續 2 秒看得到才解除），比較 v3、v3＋床位、v4＋床位、v5＋床位。
+時間軸只列手不在畫面裡的乾淨片段；`label` 另有 `empty`（空床），`staged` 另有 `prone`（趴睡但口鼻看得到），都另外統計、不算進誤報。
+結果在 `outputs/video_eval/`：時間軸對照圖、標註影片、每幀判定。非娃娃的 `嬰兒翻身`（AI 生成的灰階夜視畫面）要指定名稱才跑。
 
-舊版保留作對照（要用 YOLOv8，先執行 `uv sync --group yolo`，會多裝 PyTorch）：
-- v2（`infant_face_spike.py`，輸出 `<檔名>_face.jpg`）：整張圖找臉、姿態模型用 YOLOv8；躺著時橫的、倒的臉常找不到。
-- v1（`infant_prone_spike.py`，輸出 `spike_out.jpg`）：用姿態模型的臉部關鍵點信心度判斷，在趴睡圖上會漏報（臉埋床單時關鍵點信心度仍然很高），見 [`docs/architecture.md`](./docs/architecture.md)。
-
-## 用 SyRIP 評估（偵測率、誤報率、模型比較）
+### 每床鏡頭的床位情境：照護中、空床
 
 ```bash
-uv run python eval_syrip.py
+uv run python crib_context.py                # 要先跑過 eval_video.py（讀它存的每幀判定）
 ```
 
-直接讀 `dataset/SyRIP_Posture.zip`（不用解壓），在 700 張真實嬰兒圖上比較 YOLOv8、RTMPose、RTMO 三個姿態模型；人臉偵測固定用 YuNet。比較 YOLOv8 要先 `uv sync --group yolo`；只比 RTMPose、RTMO 的話加 `--models rtmpose rtmo`。
-**注意**：用 `--limit` 試跑也會覆蓋 `outputs/syrip_eval/` 裡同名的 CSV，試跑完要再跑一次完整的，`score_relabel.py` 才算得準。
-CPU 上全部跑完約 10 分鐘，可以先用 `--limit 10` 試跑；加 `--face v3` 改用 v3 的人臉判斷（輸出檔名加 `_v3`）。RTMPose／RTMO 的權重第一次執行時會自動下載到 `~/.cache/rtmlib`（約 220 MB）。
-結果在 `outputs/syrip_eval/`：每個模型一份 CSV，加上誤報縮圖供人工複查。**SyRIP 的圖只能內部評估，這個資料夾的東西不可放進簡報、影片或 GitHub。**
+床位邊緣有動作（大人伸手進來）→ 照護中、暫停計時；大人離開後臉不見、畫面又跟這張床的空床參考畫面相符 → 空床（灰燈），不響。
+空床參考在 `doll_video_slots.csv` 的 `empty_ref` 欄。結果在 `outputs/crib_context/`，說明見 [`docs/影片測試結果.md`](./docs/影片測試結果.md) §3h。
 
-## 用娃娃擺拍照片評估（每隻娃娃各算一次）
+### SyRIP 真實嬰兒圖（誤報率）
+
+```bash
+uv run python eval_syrip.py --face v3        # 讀 dataset/SyRIP_Posture.zip，不用解壓；CPU 約 10 分鐘
+uv run python score_relabel.py               # 用人工重標結果重算誤報率、漏判率
+```
+
+**SyRIP 的圖只能內部評估**：`outputs/syrip_eval/` 的東西不可放進簡報、影片或 GitHub。用 `--limit` 試跑會覆蓋同名的 CSV。
+誤報圖人工重標：`uv run python make_relabel_set.py` 產生資料包，填好的 `labels.csv` 存成 `outputs/relabel_syrip_labels.csv` 後再跑 `score_relabel.py`。
+
+### 娃娃擺拍照片
 
 ```bash
 uv run python eval_doll.py --det-th 0.15             # 建議參數：找人門檻降到 0.15
-uv run python eval_doll.py --face v4 --det-th 0.15   # v4（v3＋口鼻檢查，實驗版）
-uv run python eval_doll.py --det-th 0.15 --dim 0.3   # 模擬關燈
-uv run python eval_doll.py --det-th 0.15 --max-side 1280  # 模擬 1080p 攝影機
+uv run python eval_doll.py --face v4 --det-th 0.15   # v4（實驗版）
 ```
 
-讀 `dataset/infant_jpg_without_video/` 的娃娃照片和 `doll_labels.csv` 的人工標註（三批共 114 張、185 隻娃娃），用 v3（或 `--face v4`）跑一遍。
-**計分單位是「每隻娃娃」**：一張照片裡兩隻娃娃都危險、系統只抓到一隻時，用整張圖算會被判對，漏掉的那隻看不出來。
-娃娃的標註點落在哪個人框裡就算配到那隻；配不到＝沒偵測到，沒配到娃娃的人框＝額外偵測。
-結果在 `outputs/doll_eval/`：每隻娃娃一列的 CSV，加上判錯那幾張的標註圖。數字和失敗模式見 [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)。
+**計分單位是每隻娃娃**：一張照片兩隻都危險、只抓到一隻時，用整張圖算會被判對。數字和失敗模式見 [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)。
 
-## 用娃娃影片評估床位模式
+### CPU 多路負載
 
 ```bash
-uv run python eval_video.py                          # 全部影片（每支約 2–3 分鐘）
-uv run python eval_video.py --reuse --on 3 --off 3   # 不重跑偵測，只換警示規則重算
+uv run python bench_multistream.py                         # 720p、1080p，1–16 個工作程序
+uv run python bench_multistream.py --res 720 --workers 1 8 --sec 10   # 試跑
 ```
 
-每秒取 5 幀，每個床位（`doll_video_slots.csv`）一個警示狀態機，跟時間軸（`doll_video_labels.csv`，只列手不在畫面裡的乾淨片段）比對，比較 v3、v3＋床位、v4＋床位、v5＋床位。
-結果在 `outputs/video_eval/`：時間軸對照圖、標註影片、每幀判定。數字見 [`docs/影片測試結果.md`](./docs/影片測試結果.md)。
-不給影片名稱時只跑娃娃影片；非娃娃的 `嬰兒翻身`（AI 生成的灰階夜視畫面）要指定名稱：`uv run python eval_video.py 嬰兒翻身`。
+### VLM 第二道檢查（實驗，需要 NVIDIA GPU）
 
-## 模擬暗光／IR 夜視（灰階）
-
-午睡室拉窗簾偏暗，實機可能是紅外線夜視的灰階畫面（法規要求托嬰中心睡眠區的監視畫面為彩色，實際午睡時會不會切成黑白待場域確認）。三支評估都能加 `--gray`（去掉顏色）和 `--dim 0.3`（關燈：亮度 ×0.3 加雜訊），可以一起用；處理方式在 `degrade.py`。
+另開虛擬環境，主程式不需要 PyTorch：
 
 ```bash
-uv run python eval_syrip.py --face v3 --models rtmo --gray --dim 0.3   # 輸出到 outputs/syrip_eval_gray_dim0.3/
-uv run python score_relabel.py --eval-dir outputs/syrip_eval_gray_dim0.3
-uv run python eval_doll.py --det-th 0.15 --gray --dim 0.3              # 輸出 dolls_gray_dim0.3_det0.15.csv
-uv run python eval_video.py --gray --dim 0.3                           # 輸出到 outputs/video_eval_gray_dim0.3/
+uv venv .venv-vlm --python 3.12
+uv pip install --python .venv-vlm torch torchvision --index-url https://download.pytorch.org/whl/cu126
+uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-python pillow
+.venv-vlm/Scripts/python vlm_spike.py IMG_8429 IMG_8432    # 要先跑過 eval_video.py
 ```
 
-灰階／關燈的結果放在另外的檔案或資料夾，不會蓋掉原圖的基準。這只是近似：真的近紅外線下皮膚偏亮、布料反光不同，要驗證還是得用夜視攝影機實拍。
+Qwen2-VL-2B-Instruct（Apache-2.0），語言模型 4-bit；每幀問「看得到鼻子和嘴巴嗎」等三題，取 Yes／No 的機率。
 
-## SyRIP 誤報圖人工重標
+### 模擬暗光／IR 夜視
 
-```bash
-uv run python make_relabel_set.py
-```
+三支評估都能加 `--gray`（去掉顏色）和 `--dim 0.3`（亮度 ×0.3 加雜訊），結果另外放、不蓋掉原圖基準。這只是近似，要驗證還是得用夜視攝影機實拍。
 
-讀 `outputs/syrip_eval/` 的評估結果，挑出誤報圖、GT 臉看不到的圖和隨機 30 張判 OK 的圖，打亂後產生 `outputs/relabel_syrip.zip`（給標註的人）和 `outputs/relabel_syrip_key.csv`（編號對照表，自己留著）。
+## 現在進度（2026/10/10）
 
-拿回填好的 `labels.csv` 後存成 `outputs/relabel_syrip_labels.csv`，再執行 `uv run python score_relabel.py`，就會用人工標註重算每一次評估的誤報率和漏判率。
+- **真實嬰兒基準是 v3**：SyRIP 700 張（人工重標）偵測率 97.7%、口鼻看得到時誤報 6.1%、口鼻看不到時 98.6% 會警示。SyRIP 是清醒的居家照片，不是嬰兒室。
+- **娃娃擺拍**（114 張、185 隻）：臉朝下趴睡 25/25 會警示、誤報 4.4%；床位模式把警示召回從 62% 拉到 90%。
+- **娃娃影片**（6 支，3 秒規則）：v3＋床位危險片段抓到 31/41（76%，每床 1 FPS）、安全片段誤報 7/40。
+  10/10 補拍的兩支每床鏡頭影片：3/7、誤報 0/7。新發現的漏抓：頭轉開時偵測器把**耳朵當成臉**；只蓋住嘴、眼睛露出也還會漏。
+- **床位情境（原型）**：兩段空床結束時都是灰燈（原本一直響）、沒有危險片段被判成空床、沒有新增誤報。
+- **運算量**：筆電 CPU（i7-11800H）完整流程每床 1 FPS 可同時判讀約 8 床，其中 7–8 成運算是姿態模型（要搬上 UGen300 的部分）。
+- **VLM 第二道檢查**（筆電 GPU）：在沒看過的兩支影片上分辨安全／危險的頭部畫面 AUC 0.98；偵測器漏掉的 13 幀全部補到，安全畫面多 9 次提醒；判不出趴睡。只能加「請看一眼」，不能取消警示。
+- **還沒有**：真實嬰兒室畫面、新生兒影片、實機（晶片 10/26 入圍後才寄到）。真實場域測試要等 IRB 核准（Stage II）。
 
-## 現在進度
-
-- **真實嬰兒基準是 v3**（RTMO＋頭部轉正再找臉）：SyRIP 700 張真實嬰兒圖（人工重標）偵測率 97.7%、口鼻看得到時誤報 6.1%、口鼻看不到時 98.6% 會警示。SyRIP 是清醒居家照片，不是午睡室。
-- **娃娃擺拍**（114 張、185 隻娃娃，每隻各算一次）：臉朝下趴睡 25/25 會警示、誤報 4.4%；身體被被子蓋住時姿態模型常找不到人，靠「床位模式」把警示召回從 62.1% 拉到 90.2%（模擬）。
-- **娃娃影片**（4 支）：床位模式危險片段抓到 85%、安全片段誤報 8/33，誤報主要來自側睡；實驗版 v5（臉三級 ok／warn／alert）降到 91%、3/33，但在真實嬰兒上仍輸 v3，所以 v3 還是基準。v4（口鼻膚色檢查）在真實嬰兒上誤報 10.9%，也還不採用。
-- **灰階／暗光（程式模擬）**：沒有顏色比變暗更傷，SyRIP 誤報 6.1% → 18.3%（口鼻看不到時仍 98.6% 會警示）；不是 IR 實拍。
-- **下一步**：托嬰中心參訪（確認監視器位置、午睡光線、提醒方式）、把床位模式和狀態機做成原型、Stage I 交件（10/14）。真實場域測試要等 IRB 核准（Stage II）。
-
-細節見 [`docs/architecture.md`](./docs/architecture.md)、[`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)、[`docs/影片測試結果.md`](./docs/影片測試結果.md)。
+細節見 [`docs/architecture.md`](./docs/architecture.md)、[`docs/影片測試結果.md`](./docs/影片測試結果.md)。
 
 ## 範圍護欄（Stage I 不要做）
 
-晶片 10/26 才到，所以任何「跑在 UGen300 實機上」的事（部署、量化、實機效能）**全部等入圍**；Stage I 只在筆電上做概念驗證。交付物是**英文**。
+晶片 10/26 才到，任何「跑在 UGen300 實機上」的事（部署、量化、實機效能）**全部等入圍**；Stage I 只在筆電上做概念驗證，唯一例外是 HEF 轉換可行性測試（不需要晶片）。Stage I 不訓練模型。交付物是**英文**。
