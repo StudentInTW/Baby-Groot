@@ -56,6 +56,7 @@ AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器�
 ├── doll_labels.csv              # 娃娃照片的人工標註
 ├── eval_video.py                # 娃娃影片評估：每個床位一個警示狀態機，跟時間軸比對
 ├── crib_context.py              # 每床鏡頭的床位情境（原型）：照護中暫停計時、空床灰燈
+├── demo_render.py               # 示範畫面：單床燈號與判斷依據、護理站畫面示意（娃娃影片）
 ├── video_labels.py              # 影片標註的共用讀取
 ├── doll_video_slots.csv         # 影片的床位：範圍、頭朝哪邊、床頭範圍（VLM 看這裡）、空床參考畫面
 ├── doll_video_labels.csv        # 影片的時間軸：每段狀態的開始、結束秒數
@@ -148,6 +149,16 @@ uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-py
 ```
 
 Qwen2-VL-2B-Instruct（Apache-2.0），語言模型 4-bit；每幀問「看得到鼻子和嘴巴嗎」等三題，取 Yes／No 的機率。
+加 `--every 1` 改成整支影片每秒問一次口鼻題（給示範畫面用）。
+
+### 示範畫面
+
+```bash
+uv run python demo_render.py IMG_8432 --start 80 --end 112   # 單床：左邊鏡頭、右邊燈號與判斷依據
+uv run python demo_render.py --grid                          # 護理站畫面示意（8 格都是同兩支娃娃影片）
+```
+
+要先跑過 `eval_video.py`；有 `vlm_spike.py --every 1` 的結果就會畫出 VLM 的「請看一眼」（黃燈）。輸出在 `outputs/demo/`。
 
 ### 模擬暗光／IR 夜視
 

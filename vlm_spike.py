@@ -23,6 +23,7 @@ VLM 複判 spike（2026/10/9，實驗，還沒進主流程）——兩個問題�
     .venv-vlm/Scripts/python vlm_spike.py --limit 10     # 試跑前 10 幀
     .venv-vlm/Scripts/python vlm_spike.py --reuse        # 不重跑 VLM，用上次的 frames.csv 重算摘要
     .venv-vlm/Scripts/python vlm_spike.py IMG_8429 IMG_8432   # 只跑指定影片（驗證門檻用），存成 frames_<影片>.csv
+    .venv-vlm/Scripts/python vlm_spike.py IMG_8432 --every 1  # 整支影片每 1 秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv
 輸出：outputs/vlm_spike/frames.csv（每幀的機率）、crops/（餵給 VLM 的裁切圖，方便人工檢查）、終端機摘要
 """
 
@@ -174,6 +175,32 @@ def run(args):
     return rows
 
 
+def timeline(args):
+    """整支影片每 args.every 秒問一次「看得到口鼻嗎」（三個版本平均），不管標註；demo_render.py 用來畫「請看一眼」。"""
+    ask = load_vlm(args.cpu)
+    for video in args.videos:
+        slot = next(iter(ANNOTATIONS[video]["slots"].values()))
+        cap = cv2.VideoCapture(str(video_labels.find_video(video)))
+        duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS)
+        rows = []
+        for t in np.arange(0, duration - 0.5, args.every):
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            row = {"t": round(float(t), 2)}
+            for vname, img in variants(crop_slot(frame, slot)):
+                row[f"mouth_{vname}"] = round(ask(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), QUESTIONS["mouth"])[0], 4)
+            row["p_mouth"] = round(statistics.mean(row[f"mouth_{v}"] for v in VARIANTS), 4)
+            rows.append(row)
+            print(f"  {video} {t:6.1f}s 口鼻看得到 {row['p_mouth']:.2f}", flush=True)
+        with open(OUT_DIR / f"timeline_{video}.csv", "w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"→ {OUT_DIR / f'timeline_{video}.csv'}")
+
+
 def summarize(rows, th):
     for r in rows:
         for k in r:
@@ -251,7 +278,11 @@ def main():
     ap.add_argument("--cpu", action="store_true", help="沒有 GPU 時用 CPU（fp32，很慢）")
     ap.add_argument("--th", type=float, default=0.5, help="P(口鼻看得到) 的門檻（預設 0.5）")
     ap.add_argument("videos", nargs="*", help="只跑這些影片（不給＝全部）；結果另存 frames_<影片>.csv，不蓋掉全部的")
+    ap.add_argument("--every", type=float, default=0, help="改成整支影片每幾秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv")
     args = ap.parse_args()
+    if args.every:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        return timeline(args)
     args.frames_csv = OUT_DIR / (f"frames_{'_'.join(args.videos)}.csv" if args.videos else "frames.csv")
     rows = read_csv(args.frames_csv) if args.reuse else run(args)
     summarize(rows, args.th)
