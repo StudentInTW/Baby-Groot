@@ -4,11 +4,13 @@ eval_video.py
   - 危險片段有沒有發出警示（危險持續到片段結束時，系統是不是在響）
   - 安全片段會不會亂叫（誤報）
 
-標註（repo 根目錄）：
+標註（repo 根目錄，讀取見 video_labels.py；不能公開的素材另放不進 repo 的 local_video_*.csv）：
   doll_video_slots.csv   每支影片、每隻娃娃一個床位方框（畫面比例座標），和床位方向 rot
                          （把床位轉正要轉幾度；安裝時設定頭朝哪邊）。頭在框裡的人就算這個床位。
   doll_video_labels.csv  每段狀態的開始、結束秒數。只列手不在畫面裡的乾淨片段；
-                         手在擺娃娃的過渡期不計分（label 意義同 doll_labels.csv：ok 口鼻看得到／alert 看不到）。
+                         手在擺娃娃的過渡期不計分（label 意義同 doll_labels.csv：ok 口鼻看得到／alert 看不到；
+                         empty 空床——寶寶被抱走，系統不該響）。staged＝prone 是「趴睡但口鼻看得到」：
+                         政策上要警示、但口鼻判定本來就抓不到，另外列，不算進誤報。
 
 比較三種判定：
   v3        床位裡偵測到人、那個人找不到臉 → 看不到口鼻；床位裡沒偵測到人 → 不警示（v3 本來的行為）
@@ -19,9 +21,9 @@ eval_video.py
 看得到要持續 --blip 秒以上才會把「看不到」的計時歸零（防閃爍）。
 
 用法：
-    uv run python eval_video.py                  # 跑 doll_video_labels.csv 裡所有娃娃影片（不含 OTHER_VIDEOS）
+    uv run python eval_video.py                  # 跑 doll_video_labels.csv 裡所有娃娃影片（不含 NOT_DOLL 和 local 標註的影片）
     uv run python eval_video.py IMG_8150         # 只跑一支
-    uv run python eval_video.py 嬰兒翻身          # 非娃娃的影片（OTHER_VIDEOS）要指定名稱才跑
+    uv run python eval_video.py 嬰兒翻身          # 非娃娃的影片（NOT_DOLL、local 標註）要指定名稱才跑
     uv run python eval_video.py --reuse          # 不重跑偵測，用上次存的每幀結果重算（改 --on/--off 時用）
     uv run python eval_video.py --gray --dim 0.3 # 模擬補光不夠的 IR 夜視（見 degrade.py）
 輸出：outputs/video_eval/<影片>_frames.csv（每幀判定）、<影片>_timeline.png（時間軸對照圖）、
@@ -46,15 +48,12 @@ import infant_face_v5
 from degrade import degrade, describe, tag
 from face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, assign_faces, put_label
 from infant_face_v3 import load_rtmo, make_persons
+import video_labels
+from video_labels import read_csv
 
 ROOT = Path(__file__).parent
-VIDEO_DIR = ROOT / "dataset" / "doll_video"
-# 不是娃娃的影片：檔案不在 doll_video/，要指定名稱才跑（不混進娃娃影片的合計，數字才跟之前的對得上）
-OTHER_VIDEOS = {
-    "嬰兒翻身": ROOT / "dataset" / "嬰兒翻身.mp4",  # 嘉晏哥哥提供的 AI 生成影片：灰階夜視俯拍，一個嬰兒仰→側→趴
-}
-LABELS = ROOT / "doll_video_labels.csv"
-SLOTS = ROOT / "doll_video_slots.csv"
+# 不是娃娃的影片要指定名稱才跑，不混進娃娃影片的合計（數字才跟之前的對得上）；local_ 標註檔裡的影片也一樣
+NOT_DOLL = {"嬰兒翻身"}  # 嘉晏哥哥提供的 AI 生成影片：灰階夜視俯拍，一個嬰兒仰→側→趴（dataset/嬰兒翻身.mp4）
 OUT_DIR = ROOT / "outputs" / "video_eval"
 MODES = ("v3", "v3_slot", "v4_slot", "v5_slot")
 MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot", "v5_slot": "v5+slot"}
@@ -64,21 +63,12 @@ SLOT_FACE_TH = 0.8  # 床位範圍找到的臉要多高分才算（跟 v3 頭部
 ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
 
-def read_csv(path):
-    with open(path, encoding="utf-8-sig") as fh:
-        return list(csv.DictReader(fh))
-
-
 def load_annotations():
-    """回傳 {影片: {"slots": {娃娃: (x0, y0, x1, y1)}, "segments": [段落, ...]}}。"""
-    videos = defaultdict(lambda: {"slots": {}, "rot": {}, "segments": []})
-    for r in read_csv(SLOTS):
-        videos[r["video"]]["slots"][r["doll"]] = tuple(float(r[k]) for k in ("x0", "y0", "x1", "y1"))
-        videos[r["video"]]["rot"][r["doll"]] = int(r["rot"])
-    for r in read_csv(LABELS):
-        r["start"], r["end"] = float(r["start"]), float(r["end"])
-        videos[r["video"]]["segments"].append(r)
-    return videos
+    """回傳 {影片: {"slots": {娃娃: (x0, y0, x1, y1)}, "rot": {娃娃: 度數}, "segments": [段落, ...], "local": bool}}。"""
+    return {name: {"slots": {d: s["rect"] for d, s in v["slots"].items()},
+                   "rot": {d: s["rot"] for d, s in v["slots"].items()},
+                   "segments": v["segments"], "local": v["local"]}
+            for name, v in video_labels.load().items()}
 
 
 def gt_at(segments, doll, t):
@@ -256,14 +246,18 @@ def summarize(results, title=None):
     if title:
         print(f"\n{'=' * 78}\n== {title}")
     danger = [r for r in results if r["seg"]["label"] == "alert"]
-    safe = [r for r in results if r["seg"]["label"] == "ok"]
+    safe = [r for r in results if r["seg"]["label"] == "ok" and r["seg"]["staged"] != "prone"]
+    prone = [r for r in results if r["seg"]["label"] == "ok" and r["seg"]["staged"] == "prone"]
+    empty = [r for r in results if r["seg"]["label"] == "empty"]
     for m in MODES:
         caught = [r for r in danger if r[m]["caught"]]
         cover = sum(r[m]["coverage"] for r in danger) / max(len(danger), 1)
         scored = [r for r in safe if r[m]["false_alert"] is not None]
         fa = sum(r[m]["false_alert"] for r in scored)
+        extra = "".join(f"｜{name} {sum(bool(r[m]['false_alert']) for r in segs)}/{len(segs)} 有響"
+                        for name, segs in (("趴睡但口鼻看得到", prone), ("空床", empty)) if segs)
         print(f"    {MODE_NAMES[m]:<8} 危險片段抓到 {len(caught)}/{len(danger)}（{len(caught) / max(len(danger), 1):.0%}，"
-              f"危險時間裡有 {cover:.0%} 在警示）｜安全片段誤報 {fa}/{len(scored)}")
+              f"危險時間裡有 {cover:.0%} 在警示）｜安全片段誤報 {fa}/{len(scored)}{extra}")
 
 
 def draw_timeline(name, rows, alerts, segments, duration, out_path):
@@ -281,7 +275,7 @@ def draw_timeline(name, rows, alerts, segments, duration, out_path):
     cv2.putText(img, f"{name}  (green = mouth/nose visible, red = not visible / alert, gray = no person, "
                      f"blank GT = hands in frame, not scored)", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
     y = 50
-    colors = {"ok": (80, 180, 80), "alert": (60, 60, 220), "partial": (0, 170, 255)}
+    colors = {"ok": (80, 180, 80), "alert": (60, 60, 220), "partial": (0, 170, 255), "empty": (170, 170, 170)}
     for doll in dolls:
         cv2.putText(img, f"{doll} doll", (10, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
         y += 24
@@ -322,7 +316,7 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
         color = RED if alarm else GREEN
         cv2.rectangle(vis, (int(x0 * w), int(y0 * h)), (int(x1 * w) - 1, int(y1 * h)), color, 8)
         seg = gt_at(segments, doll, t)
-        gt = "GT: -" if seg is None else f"GT: {'visible' if seg['label'] == 'ok' else 'NOT visible'}"
+        gt = "GT: -" if seg is None else "GT: " + {"ok": "visible", "alert": "NOT visible"}.get(seg["label"], seg["label"])
         put_label(vis, f"{doll} {'ALERT' if alarm else 'OK'}", x0 * w + 10, y0 * h + 60, color, 1.8, 5)
         put_label(vis, gt, x0 * w + 10, y1 * h - 20, (90, 90, 90), 1.1, 3)
     put_label(vis, f"{int(t // 60)}:{t % 60:04.1f}", 20, 80, (0, 0, 0), 2.2, 5)
@@ -334,7 +328,7 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
 
 def run_video(name, ann, args, run_pose, detector, det_v5):
     """逐幀偵測（每秒 --fps 幀），存每幀結果和標註影片。回傳 rows、影片長度。"""
-    cap = cv2.VideoCapture(str(OTHER_VIDEOS.get(name, VIDEO_DIR / f"{name}.MOV")))
+    cap = cv2.VideoCapture(str(video_labels.find_video(name)))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     step = max(1, round(src_fps / args.fps))
@@ -394,7 +388,7 @@ def main():
 
     infant_face_v3.DET_TH = args.det_th
     videos = load_annotations()
-    names = args.videos or sorted(v for v in videos if v not in OTHER_VIDEOS)
+    names = args.videos or sorted(v for v, a in videos.items() if v not in NOT_DOLL and not a["local"])
     cond = tag(args.gray, args.dim)  # 灰階／關燈的結果另外放，不蓋掉原圖的
     args.out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
     args.out_dir.mkdir(parents=True, exist_ok=True)

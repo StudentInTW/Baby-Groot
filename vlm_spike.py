@@ -22,6 +22,7 @@ VLM 複判 spike（2026/10/9，實驗，還沒進主流程）——兩個問題�
     .venv-vlm/Scripts/python vlm_spike.py                # 全部片段
     .venv-vlm/Scripts/python vlm_spike.py --limit 10     # 試跑前 10 幀
     .venv-vlm/Scripts/python vlm_spike.py --reuse        # 不重跑 VLM，用上次的 frames.csv 重算摘要
+    .venv-vlm/Scripts/python vlm_spike.py IMG_8429 IMG_8432   # 只跑指定影片（驗證門檻用），存成 frames_<影片>.csv
 輸出：outputs/vlm_spike/frames.csv（每幀的機率）、crops/（餵給 VLM 的裁切圖，方便人工檢查）、終端機摘要
 """
 
@@ -34,12 +35,19 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import video_labels
+from video_labels import read_csv
+
 ROOT = Path(__file__).parent
-VIDEOS = {"嬰兒翻身": ROOT / "dataset" / "嬰兒翻身.mp4"}  # 非娃娃（AI 生成），其餘在 dataset/doll_video/
+ANNOTATIONS = video_labels.load()
+NOT_DOLL = {"嬰兒翻身"} | {v for v, a in ANNOTATIONS.items() if a["local"]}  # AI 生成影片、local 標註的影片不算娃娃
 EVAL_DIR = ROOT / "outputs" / "video_eval"
 OUT_DIR = ROOT / "outputs" / "vlm_spike"
 MODEL_ID = "Qwen/Qwen2-VL-2B-Instruct"
 VARIANTS = ("raw", "jpeg", "flip")  # 見 variants()
+# 每床鏡頭（10/10 補拍）整個畫面就是床位，整張圖縮到 448 臉只剩約 20 像素，VLM 看不出來（10/10 試過：
+# 仰躺正臉只有 41% 判成看得到、非趴睡 98% 被說成趴睡）——所以 VLM 改看「床頭那一端」：床位檔的 head_x0..head_y1，
+# 安裝時跟床位一起設定。舊影片的床位本來就是頭部範圍，這幾欄空白。
 CROP = 448          # 裁切圖長邊；Qwen2-VL 每 28×28 像素一個視覺 token，448² ≈ 256 個
 EXTRA_EVERY = 8     # 長片段每幾秒多取一幀
 ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
@@ -51,33 +59,27 @@ QUESTIONS = {
 }
 
 
-def read_csv(path):
-    with open(path, encoding="utf-8-sig") as fh:
-        return list(csv.DictReader(fh))
-
-
-def video_path(name):
-    return VIDEOS.get(name, ROOT / "dataset" / "doll_video" / f"{name}.MOV")
-
-
-def sample_points():
-    """回傳 [(影片, 娃娃, 秒, 標註列), ...]。"""
-    slots = {(r["video"], r["doll"]): r for r in read_csv(ROOT / "doll_video_slots.csv")}
+def sample_points(videos=()):
+    """回傳 [(影片, 娃娃, 秒, 標註列, 床位設定), ...]；videos 有給就只取這些影片。"""
     points = []
-    for seg in read_csv(ROOT / "doll_video_labels.csv"):
-        start, end = float(seg["start"]), float(seg["end"])
-        ts = [start + (end - start) * q for q in (0.25, 0.5, 0.75)]
-        ts += list(np.arange(start + EXTRA_EVERY, end - 1, EXTRA_EVERY))
-        for t in sorted(set(round(t, 1) for t in ts)):
-            points.append((seg["video"], seg["doll"], t, seg, slots[seg["video"], seg["doll"]]))
+    for video, ann in ANNOTATIONS.items():
+        if videos and video not in videos:
+            continue
+        for seg in ann["segments"]:
+            start, end = seg["start"], seg["end"]
+            ts = [start + (end - start) * q for q in (0.25, 0.5, 0.75)]
+            ts += list(np.arange(start + EXTRA_EVERY, end - 1, EXTRA_EVERY))
+            for t in sorted(set(round(t, 1) for t in ts)):
+                points.append((video, seg["doll"], t, seg, ann["slots"][seg["doll"]]))
     return points
 
 
 def crop_slot(frame, slot):
+    """裁出床頭範圍（沒設定就用床位範圍）、依床位方向轉正，縮到長邊 CROP。"""
     h, w = frame.shape[:2]
-    x0, y0, x1, y1 = (float(slot[k]) for k in ("x0", "y0", "x1", "y1"))
+    x0, y0, x1, y1 = slot["head"] or slot["rect"]
     crop = frame[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]
-    rot = int(slot["rot"])
+    rot = slot["rot"]
     crop = cv2.rotate(crop, ROTATE[rot]) if rot else crop
     s = CROP / max(crop.shape[:2])
     return cv2.resize(crop, (round(crop.shape[1] * s), round(crop.shape[0] * s)), interpolation=cv2.INTER_AREA)
@@ -135,11 +137,11 @@ def variants(crop):
 def run(args):
     ask = load_vlm(args.cpu)
     (OUT_DIR / "crops").mkdir(parents=True, exist_ok=True)
-    points = sample_points()[:args.limit or None]
+    points = sample_points(args.videos)[:args.limit or None]
     cache, caps, rows = {}, {}, []
     for i, (video, doll, t, seg, slot) in enumerate(points, 1):
         if video not in caps:
-            caps[video] = cv2.VideoCapture(str(video_path(video)))
+            caps[video] = cv2.VideoCapture(str(video_labels.find_video(video)))
         cap = caps[video]
         cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
         ok, frame = cap.read()
@@ -165,7 +167,7 @@ def run(args):
         print(f"[{i}/{len(points)}] {video} {doll} {t:6.1f}s {seg['label']:<5} {seg['note'][:18]:<18}"
               f" v3+slot={row['v3_slot']:<7} 口鼻看得到 {row['p_mouth']:.2f}（原圖 {row['mouth_raw']:.2f}／JPEG "
               f"{row['mouth_jpeg']:.2f}）｜被蓋住 {row['p_covered']:.2f}｜趴睡 {row['p_prone']:.2f}")
-    with open(OUT_DIR / "frames.csv", "w", newline="", encoding="utf-8-sig") as fh:
+    with open(args.frames_csv, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
@@ -178,7 +180,7 @@ def summarize(rows, th):
             if k.startswith(tuple(f"{q}_" for q in QUESTIONS) + ("p_",)) and k != "prone_gt":
                 r[k] = float(r[k])
         r["prone_gt"] = int(r["prone_gt"])
-    doll = [r for r in rows if r["video"] != "嬰兒翻身"]
+    doll = [r for r in rows if r["video"] not in NOT_DOLL]
 
     def rate(rs, cond):
         n = sum(1 for r in rs if cond(r))
@@ -187,30 +189,46 @@ def summarize(rows, th):
     print(f"\n== 1. 口鼻看不看得到（VLM P(Yes) ≥ {th} 算看得到；只算娃娃影片，{len(doll)} 幀）")
     groups = {
         "安全：仰躺正臉": lambda r: r["label"] == "ok" and "側" not in r["note"],
-        "安全：側臉口鼻看得到": lambda r: r["label"] == "ok" and "側" in r["note"],
+        "安全：側臉口鼻看得到": lambda r: r["label"] == "ok" and "側" in r["note"] and not r["prone_gt"],
+        "趴睡但臉側向、口鼻看得到": lambda r: r["label"] == "ok" and r["prone_gt"],
         "危險：被子／衣服／玩偶蓋住": lambda r: r["label"] == "alert" and not r["prone_gt"] and r["staged"] == "danger",
         "危險：趴睡臉朝下／埋抱枕": lambda r: r["label"] == "alert" and r["prone_gt"],
         "看不到：側躺後腦勺朝鏡頭": lambda r: r["label"] == "alert" and r["staged"] == "warn" and not r["prone_gt"],
     }
     for title, cond in groups.items():
         rs = [r for r in doll if cond(r)]
-        want_visible = title.startswith("安全")
+        want_visible = title.startswith(("安全", "趴睡但"))
         print(f"    {title:<16} 口鼻題判對 {rate(rs, lambda r: (r['p_mouth'] >= th) == want_visible)}"
               f"｜被蓋住題判對 {rate(rs, lambda r: (r['p_covered'] < 0.5) == want_visible)}")
 
     hidden = [r for r in doll if r["v3_slot"] == "hidden"]
-    fa = [r for r in hidden if r["label"] == "ok"]
+    fa = [r for r in hidden if r["label"] == "ok" and r["staged"] != "prone"]  # 趴睡但口鼻看得到：政策本來就要響，不算誤報
     real = [r for r in hidden if r["label"] == "alert"]
+    empty = [r for r in doll if r["label"] == "empty"]
+    if empty:
+        print(f"    {'空床':<16} 口鼻題說看得到 {rate(empty, lambda r: r['p_mouth'] >= th)}"
+              f"｜趴睡題說是 {rate(empty, lambda r: r['p_prone'] >= 0.5)}")
     print(f"\n== 2. 複判：v3＋床位判「看不到」的 {len(hidden)} 幀")
     print(f"    其中標註安全（誤報）{len(fa)} 幀：VLM 說看得到 → 可以標「可能誤報」{rate(fa, lambda r: r['p_mouth'] >= th)}")
     print(f"    其中標註危險 {len(real)} 幀：VLM 說看得到 → 若拿來關紅燈會漏掉 {rate(real, lambda r: r['p_mouth'] >= th)}")
-    for t2 in (0.3, 0.5, 0.7, 0.9):
+    for t2 in (0.3, 0.35, 0.4, 0.45, 0.5, 0.7, 0.9):
         print(f"      門檻 {t2}：誤報幀可標註 {sum(r['p_mouth'] >= t2 for r in fa)}/{len(fa)}"
               f"、危險幀被說成看得到 {sum(r['p_mouth'] >= t2 for r in real)}/{len(real)}")
 
+    # 反方向（10/10 補拍發現：頭轉開時 YuNet 把耳朵／頭側當成臉 → 綠燈，漏掉的是危險）：
+    # v3＋床位判「看得到」的幀，VLM 說看不到 → 能不能當第二道網、把漏掉的危險補成「請看一眼」
+    shown = [r for r in doll if r["v3_slot"] == "visible"]
+    missed = [r for r in shown if r["label"] == "alert"]
+    fine = [r for r in shown if r["label"] == "ok" and r["staged"] != "prone"]
+    print(f"\n== 2b. 補抓：v3＋床位判「看得到」的 {len(shown)} 幀（不含空床）")
+    for t2 in (0.3, 0.35, 0.4, 0.45, 0.5, 0.7):
+        print(f"      門檻 {t2}：漏掉的危險幀 VLM 說看不到 {sum(r['p_mouth'] < t2 for r in missed)}/{len(missed)}"
+              f"、安全幀 VLM 說看不到（會多出的提醒）{sum(r['p_mouth'] < t2 for r in fine)}/{len(fine)}")
+
     print("\n== 3. 趴睡（VLM P(Yes) ≥ 0.5 算趴睡）")
     for title, rs in (("娃娃：標註趴睡", [r for r in doll if r["prone_gt"]]),
-                      ("娃娃：非趴睡", [r for r in doll if not r["prone_gt"]]),
+                      ("娃娃：趴睡但口鼻看得到", [r for r in doll if r["prone_gt"] and r["label"] == "ok"]),
+                      ("娃娃：非趴睡", [r for r in doll if not r["prone_gt"] and r["label"] != "empty"]),
                       ("AI 生成翻身影片：趴", [r for r in rows if r["video"] == "嬰兒翻身" and r["prone_gt"]]),
                       ("AI 生成翻身影片：非趴", [r for r in rows if r["video"] == "嬰兒翻身" and not r["prone_gt"]])):
         want = "非" not in title
@@ -232,8 +250,10 @@ def main():
     ap.add_argument("--reuse", action="store_true", help="不重跑 VLM，讀上次的 frames.csv 重算摘要")
     ap.add_argument("--cpu", action="store_true", help="沒有 GPU 時用 CPU（fp32，很慢）")
     ap.add_argument("--th", type=float, default=0.5, help="P(口鼻看得到) 的門檻（預設 0.5）")
+    ap.add_argument("videos", nargs="*", help="只跑這些影片（不給＝全部）；結果另存 frames_<影片>.csv，不蓋掉全部的")
     args = ap.parse_args()
-    rows = read_csv(OUT_DIR / "frames.csv") if args.reuse else run(args)
+    args.frames_csv = OUT_DIR / (f"frames_{'_'.join(args.videos)}.csv" if args.videos else "frames.csv")
+    rows = read_csv(args.frames_csv) if args.reuse else run(args)
     summarize(rows, args.th)
     print(f"\n輸出：{OUT_DIR}")
 

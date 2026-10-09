@@ -25,3 +25,6 @@ hailo/calib/
 docs/private/
 docs/*.docx
 docs/archive/
+
+# 不能公開的素材（例如網路影片）的標註，只在本機評估（見 video_labels.py）
+local_video_*.csv

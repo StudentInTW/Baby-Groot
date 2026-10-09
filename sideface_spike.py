@@ -165,6 +165,8 @@ def main():
             doll = seg["doll"]
             if doll not in slots[name]:
                 continue
+            if seg["label"] == "empty":  # 空床（10/10 補拍）沒有臉可分類
+                continue
             rect, rot = slots[name][doll], rots[name][doll]
             cat = category(seg)
             t = seg["start"]
