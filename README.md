@@ -57,6 +57,8 @@ AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器�
 ├── eval_video.py                # 娃娃影片評估：每個床位一個警示狀態機，跟時間軸比對
 ├── crib_context.py              # 每床鏡頭的床位情境（原型）：照護中暫停計時、空床灰燈
 ├── demo_render.py               # 示範畫面：單床燈號與判斷依據、護理站畫面示意（娃娃影片）
+├── live_view.py                 # 示範：筆電即時判讀（按原速播娃娃影片、當場算燈號，錄螢幕用）
+├── demo_ui/                     # 示範：可以點的護理站介面原型（靜態網頁；export_assets.py 匯出真實燈號，sample/ 是假資料）
 ├── video_labels.py              # 影片標註的共用讀取
 ├── doll_video_slots.csv         # 影片的床位：範圍、頭朝哪邊、床頭範圍（VLM 看這裡）、空床參考畫面
 ├── doll_video_labels.csv        # 影片的時間軸：每段狀態的開始、結束秒數
@@ -66,6 +68,7 @@ AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器�
 ├── sideface_spike.py / spike_posture.py     # 早期 spike：側臉幾何、關鍵點判睡姿（結論見 docs）
 ├── model/face_detection_yunet_2023mar.onnx  # 人臉偵測（OpenCV YuNet，MIT）；其他權重第一次執行時自動下載
 ├── docs/
+│   ├── 任務_示範素材.md         # 影片示範素材的任務說明（開場雙畫面、介面原型、即時判讀）
 │   ├── architecture.md          # 技術架構（先讀這份）
 │   ├── 娃娃測試結果.md / 影片測試結果.md   # 測試數字、失敗模式、限制
 │   ├── 資料收集說明.md          # 娃娃照片與影片的拍攝規範
@@ -156,9 +159,28 @@ Qwen2-VL-2B-Instruct（Apache-2.0），語言模型 4-bit；每幀問「看得�
 ```bash
 uv run python demo_render.py IMG_8432 --start 80 --end 112   # 單床：左邊鏡頭、右邊燈號與判斷依據
 uv run python demo_render.py --grid                          # 護理站畫面示意（8 格都是同兩支娃娃影片）
+uv run python demo_render.py --split                         # 開場雙畫面：左家長手機、右護理站＋護理師推播（IMG_8432 86–100 秒）
 ```
 
 要先跑過 `eval_video.py`；有 `vlm_spike.py --every 1` 的結果就會畫出 VLM 的「請看一眼」（黃燈）。輸出在 `outputs/demo/`。
+
+**可以點的護理站介面原型**（`demo_ui/`，給操作示範錄螢幕）：
+
+```bash
+uv run python demo_ui/export_assets.py    # 匯出 8 床的真實燈號和剪好的影片 → demo_ui/data/、demo_ui/media/（不進 repo）
+```
+
+然後用瀏覽器開 `demo_ui/index.html`（雙擊即可，不用架伺服器、不連外）。畫面：安裝（框床位、標床頭、拍空床照）→
+護理站牆面（8 床同步播放）→ 點一床看詳細 → 紅燈時按 Acknowledge → 右上角 📱 開關護理師手機（推播只有文字）。
+空白鍵播放／暫停、⟲ 從頭開始。沒有 `data/` 時自動用 `sample/` 的假資料（網址加 `?sample` 強制使用）。
+
+**筆電即時判讀**（不是事先算好的：按原速播放、當場跑 v3＋床位＋床位情境，右上角顯示每幀毫秒數與 FPS）：
+
+```bash
+uv run python live_view.py IMG_8432 --start 80     # q／Esc 結束、空白鍵暫停；加 --save 檔名.mp4 同時存一份
+```
+
+錄螢幕用 Windows 的 Win+Alt+R 或 OBS。VLM 不即時跑，畫面上不顯示。
 
 ### 模擬暗光／IR 夜視
 

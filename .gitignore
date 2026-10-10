@@ -28,3 +28,7 @@ docs/archive/
 
 # 不能公開的素材（例如網路影片）的標註，只在本機評估（見 video_labels.py）
 local_video_*.csv
+
+# 介面原型的真資料（娃娃影片剪的片段與燈號；用 demo_ui/export_assets.py 產生）。假資料 demo_ui/sample/ 進 repo
+demo_ui/data/
+demo_ui/media/

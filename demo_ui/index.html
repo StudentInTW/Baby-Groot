@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nurse Station Prototype</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!--
+  可以點的護理站介面原型（給 3 分鐘影片的操作示範錄螢幕用）。純靜態：雙擊開啟即可，不連任何外部網址。
+  資料：data/cribs.js（demo_ui/export_assets.py 匯出的系統真實燈號）；沒有就用 sample/cribs.js（假資料）。網址加 ?sample 強制用假資料。
+-->
+<header class="topbar">
+  <div class="brand"><span class="logo" aria-hidden="true"></span><span id="product-name"></span></div>
+  <nav class="tabs">
+    <button data-view="setup">Setup</button>
+    <button data-view="wall" class="active">Nurse station</button>
+  </nav>
+  <div class="controls">
+    <span id="sample-badge" class="badge" hidden>SAMPLE DATA</span>
+    <span id="clock" class="clock">--:--:--</span>
+    <button id="play" class="ctl" title="Play / pause (space)">▶</button>
+    <button id="restart" class="ctl" title="Restart">⟲</button>
+    <button id="phone-toggle" class="ctl" title="Show the nurse's phone">📱</button>
+  </div>
+</header>
+
+<main>
+  <!-- 1. 安裝 -->
+  <section id="view-setup" class="view" hidden>
+    <aside class="setup-list">
+      <h2>Cribs</h2>
+      <ul id="setup-cribs"></ul>
+      <button id="setup-reset" class="link">Reset all</button>
+    </aside>
+    <div class="setup-stage">
+      <ol class="steps" id="steps">
+        <li data-step="1">Pick a crib</li>
+        <li data-step="2">Draw the crib area</li>
+        <li data-step="3">Mark the head end</li>
+        <li data-step="4">Empty-crib photo</li>
+        <li data-step="5">Done</li>
+      </ol>
+      <div class="setup-body">
+        <div class="setup-frame" id="setup-frame">
+          <video id="setup-video" muted playsinline preload="auto"></video>
+          <canvas id="setup-canvas"></canvas>
+          <div class="flash" id="setup-flash"></div>
+        </div>
+        <div class="setup-side">
+          <h2 id="setup-title">Pick a crib</h2>
+          <p id="setup-help">Choose a crib on the left. Each crib has its own camera.</p>
+          <div id="setup-thumb-wrap" hidden>
+            <canvas id="setup-thumb" width="180" height="320"></canvas>
+            <p id="setup-thumb-caption" class="muted"></p>
+          </div>
+          <div class="setup-actions">
+            <button id="setup-redo" class="secondary" hidden>Redo</button>
+            <button id="setup-next" class="primary" hidden>Next</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 護理站牆面 -->
+  <section id="view-wall" class="view">
+    <div class="wall" id="wall"></div>
+    <aside class="sidebar">
+      <h1>Nurse station</h1>
+      <p class="muted" id="wall-sub"></p>
+      <div class="counts" id="counts"></div>
+      <h3>Events</h3>
+      <ul class="events" id="events"></ul>
+      <p class="muted small" id="wall-note"></p>
+    </aside>
+  </section>
+
+  <!-- 3. 單床詳細 -->
+  <section id="view-detail" class="view" hidden>
+    <div class="detail-cam">
+      <video id="detail-video" muted playsinline preload="auto"></video>
+    </div>
+    <div class="detail-panel">
+      <button id="detail-back" class="link">← All cribs</button>
+      <p class="muted big" id="detail-label"></p>
+      <div class="pill" id="detail-pill"><span id="detail-title"></span></div>
+      <p id="detail-desc"></p>
+      <div class="countdown" id="detail-countdown" hidden>
+        <div class="bar"><div class="fill" id="detail-fill"></div></div>
+        <span class="muted" id="detail-count"></span>
+      </div>
+      <h3>What the box sees</h3>
+      <ul class="signals" id="signals"></ul>
+      <h3>This clip</h3>
+      <div class="timeline" id="timeline"><canvas id="timeline-canvas"></canvas><div class="cursor" id="timeline-cursor"></div></div>
+      <div class="timeline-ends muted small"><span id="tl-start"></span><span id="tl-end"></span></div>
+    </div>
+  </section>
+</main>
+
+<!-- 4. 紅燈處理 -->
+<div class="alert" id="alert" hidden role="alertdialog" aria-live="assertive">
+  <div class="alert-icon">!</div>
+  <div class="alert-text">
+    <strong id="alert-title"></strong>
+    <span id="alert-sub"></span>
+  </div>
+  <button id="alert-open" class="secondary">Open crib</button>
+  <button id="alert-ack" class="primary">Acknowledge · I'm at the crib</button>
+</div>
+
+<!-- 5. 手機推播（只有文字，沒有影像） -->
+<div class="phone" id="phone" hidden>
+  <div class="phone-screen">
+    <div class="phone-status"><span id="phone-time"></span><span class="phone-batt"></span></div>
+    <div class="phone-clock" id="phone-clock"></div>
+    <div class="phone-date">Nurse on duty · text-only alerts</div>
+    <ul class="notes" id="notes"></ul>
+    <div class="phone-home"></div>
+  </div>
+</div>
+
+<div class="proto-tag">UI prototype · doll re-enactment</div>
+<div class="loading" id="loading">Loading…</div>
+<script src="app.js"></script>
+</body>
+</html>

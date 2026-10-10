@@ -128,28 +128,46 @@ def border_mask(shape):
     return band
 
 
+class EdgeFeatures:
+    """逐幀算床位特徵（live_view.py 即時用；features() 批次也用這個，兩邊算法一樣）。
+    每次 update 給一幀（要是每秒 FPS 幀取樣的那幾幀），回傳 (邊緣移動比例, 跟空床參考的色差或 None)。"""
+
+    def __init__(self, rect, ref_frame=None):
+        self.rect = rect
+        self.ref = small(ref_frame, rect).astype(np.float32) if ref_frame is not None else None
+        self.prev, self.band = None, None
+
+    def update(self, frame):
+        img = small(frame, self.rect)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        self.band = border_mask(gray.shape) if self.band is None else self.band
+        motion = edge_motion(self.prev, gray, self.band) if self.prev is not None else 0.0
+        diff = float(np.abs(img.astype(np.float32) - self.ref).mean()) if self.ref is not None else None
+        self.prev = gray
+        return motion, diff
+
+
+def read_empty_ref(cap, slot):
+    """讀床位的空床參考畫面（安裝時拍的空床照；沒有就回傳 None），讀完把影片倒回開頭。"""
+    if slot["empty_ref"] is None:
+        return None
+    cap.set(cv2.CAP_PROP_POS_MSEC, slot["empty_ref"] * 1000)
+    ok, frame = cap.read()
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    return frame if ok else None
+
+
 def features(name, slot):
     """每秒 FPS 幀（跟 eval_video.py 同一批幀）：(秒, 邊緣移動比例, 跟空床參考的色差或 None)。"""
     cap = cv2.VideoCapture(str(video_labels.find_video(name)))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
-    ref = None
-    if slot["empty_ref"] is not None:
-        cap.set(cv2.CAP_PROP_POS_MSEC, slot["empty_ref"] * 1000)
-        ok, frame = cap.read()
-        ref = small(frame, slot["rect"]).astype(np.float32) if ok else None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    feat = EdgeFeatures(slot["rect"], read_empty_ref(cap, slot))
     step = max(1, round(src_fps / FPS))
-    rows, prev, band, i = [], None, None, 0
+    rows, i = [], 0
     while cap.grab():
         if i % step == 0:
             _, frame = cap.retrieve()
-            img = small(frame, slot["rect"])
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            band = border_mask(gray.shape) if band is None else band
-            motion = edge_motion(prev, gray, band) if prev is not None else 0.0
-            diff = float(np.abs(img.astype(np.float32) - ref).mean()) if ref is not None else None
-            rows.append((round(i / src_fps, 3), motion, diff))
-            prev = gray
+            rows.append((round(i / src_fps, 3), *feat.update(frame)))
         i += 1
     cap.release()
     return rows
