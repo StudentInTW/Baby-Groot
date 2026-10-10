@@ -127,7 +127,9 @@ def timeline_states(name, slot, end):
 
 
 def face_boxes(name, ann, start, end):
-    """重跑偵測（只跑輸出的那一段），回傳 {取樣時刻: [臉框, ...]}。"""
+    """重跑偵測（只跑輸出的那一段），回傳 {取樣時刻: [臉框, ...]}。找人門檻跟 eval_video.py 一致（0.15），臉框才對得上燈號。"""
+    import infant_face_v3
+    infant_face_v3.DET_TH = 0.15
     run_pose = load_rtmo()
     det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
     det_v5 = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), infant_face_v5.FACE_TH_V5)
