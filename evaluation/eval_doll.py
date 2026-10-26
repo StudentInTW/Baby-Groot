@@ -3,7 +3,7 @@ eval_doll.py
 用娃娃擺拍照片評估 v3 管線。**計分單位是「每隻娃娃」**，不是「每張照片」——
 一張照片裡兩隻娃娃都危險、系統只抓到一隻時，用整張圖算會被判對，漏掉的那隻看不出來。
 
-真實標註：`doll_labels.csv`（每隻娃娃一列，人工標）
+真實標註：`labels/doll_labels.csv`（每隻娃娃一列，人工標）
   x, y    娃娃軀幹中心；身體被被子蓋住時改標頭（佔整張圖寬高的比例）。拿來把偵測到的人配回是哪隻娃娃
   label   口鼻看不看得到：ok＝看得到／partial＝只看得到一部分／alert＝看不到
           （依「側躺但看不到口鼻一律算警示」的標準；partial 不計入誤報率，另外列）
@@ -27,12 +27,12 @@ eval_doll.py
 床位裡找不到人、或找到人但看不到臉，都算警示——被子蓋住身體時姿態模型找不到人，靠這個補。
 
 用法：
-    uv run python eval_doll.py                     # 原圖
-    uv run python eval_doll.py --dim 0.3           # 模擬關燈（亮度降到 30%，見 degrade.py）
-    uv run python eval_doll.py --gray              # 模擬 IR 夜視（灰階）；可以跟 --dim 一起用
-    uv run python eval_doll.py --max-side 1280     # 模擬解析度較低的天花板攝影機
-    uv run python eval_doll.py --save-vis          # 每張都存標註圖（預設只存判錯的）
-    uv run python eval_doll.py --face v4 --det-th 0.15  # v4（v3＋口鼻檢查）＋建議的找人門檻
+    uv run python -m evaluation.eval_doll                     # 原圖
+    uv run python -m evaluation.eval_doll --dim 0.3           # 模擬關燈（亮度降到 30%，見 degrade.py）
+    uv run python -m evaluation.eval_doll --gray              # 模擬 IR 夜視（灰階）；可以跟 --dim 一起用
+    uv run python -m evaluation.eval_doll --max-side 1280     # 模擬解析度較低的天花板攝影機
+    uv run python -m evaluation.eval_doll --save-vis          # 每張都存標註圖（預設只存判錯的）
+    uv run python -m evaluation.eval_doll --face v4 --det-th 0.15  # v4（v3＋口鼻檢查）＋建議的找人門檻
 輸出：outputs/doll_eval/dolls<suffix>.csv、判錯的標註圖 outputs/doll_eval/vis<suffix>/
 """
 
@@ -48,18 +48,18 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-import face_common
-import infant_face_v3
-import infant_face_v4
-from face_common import (
+from pipeline import face_common
+from pipeline import infant_face_v3
+from pipeline import infant_face_v4
+from pipeline.face_common import (
     FACE_MODEL, FACE_SCORE_TH, GREEN, MIN_BODY_KPTS, RED, YELLOW, assign_faces, put_label,
 )
-from degrade import degrade, describe
-from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
+from evaluation.degrade import degrade, describe
+from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 IMG_DIR = ROOT / "dataset" / "infant_jpg_without_video"
-LABELS = ROOT / "doll_labels.csv"
+LABELS = ROOT / "labels" / "doll_labels.csv"
 OUT_DIR = ROOT / "outputs" / "doll_eval"
 
 

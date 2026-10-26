@@ -17,7 +17,7 @@ warn＝軟提醒（「側睡/需關注，看一眼」），不算硬警示、不
 eye_asym 等幾何都相對「雙眼軸」算，跟臉在畫面裡轉幾度無關（躺著的臉是橫的、倒的都成立）。
 
 用法（單張圖，畫三級）：
-    uv run python infant_face_v5.py 圖片1.jpg [圖片2.jpg ...]
+    uv run python -m pipeline.infant_face_v5 圖片1.jpg [圖片2.jpg ...]
 輸出：outputs/<檔名>_v5.jpg（人框：綠 ok／橘 warn／紅 alert）
 床位/影片評估見 eval_video.py（v5_slot 模式）、SyRIP 見 eval_syrip.py（--face v5）。
 門檻用「模組.常數」在呼叫時讀取，方便實驗調參。
@@ -32,12 +32,12 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 import numpy as np
 
-import face_common as fc
-import infant_face_v3 as v3
-import infant_face_v4 as v4
-from face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, OUT_DIR, RED, assign_faces, put_label
-from infant_face_v4 import ORANGE, drop_covered_faces, mouth_skin_ratio
-from infant_face_v3 import load_rtmo, make_persons
+from pipeline import face_common as fc
+from pipeline import infant_face_v3 as v3
+from pipeline import infant_face_v4 as v4
+from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, OUT_DIR, RED, assign_faces, put_label
+from pipeline.infant_face_v4 import ORANGE, drop_covered_faces, mouth_skin_ratio
+from pipeline.infant_face_v3 import load_rtmo, make_persons
 
 FACE_TH_V5 = 0.3        # 低門檻找臉（找回側臉；side face spike：側臉中位分數 0.66），只用來把 alert 降成 warn
 FRONTAL_MAX = 0.5       # backbone 可見的臉：eye_asym ≤ 此值算正臉→ok，否則側臉→warn（spike：正臉≈0.13、側臉≈1.0）
@@ -163,7 +163,7 @@ def analyze(run_pose, det_normal, det_low, image_path):
 if __name__ == "__main__":
     paths = sys.argv[1:]
     if not paths:
-        sys.exit("用法：uv run python infant_face_v5.py 圖片1.jpg [圖片2.jpg ...]")
+        sys.exit("用法：uv run python -m pipeline.infant_face_v5 圖片1.jpg [圖片2.jpg ...]")
     run_pose = load_rtmo()
     det_normal = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
     det_low = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_TH_V5)

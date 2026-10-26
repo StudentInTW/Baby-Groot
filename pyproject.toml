@@ -1,7 +1,7 @@
 [project]
-name = "asus-hackathon"
+name = "baby-groot"
 version = "0.1.0"
-description = "Add your description here"
+description = "Per-crib airway watch for postpartum nurseries on the ASUS UGen300 (Hailo-10H)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

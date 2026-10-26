@@ -9,8 +9,8 @@ Stage I 風險前置實驗 —— 在「嬰兒趴睡/臉朝下」影像上跑姿
       正式版應改用嬰兒專屬模型(ostadabbas Infant-Pose-Estimation / FiDIP)。
 
 用法：
-    pip install ultralytics opencv-python
-    python infant_prone_spike.py 你的圖片.jpg
+    uv sync --group yolo
+    uv run python -m experiments.infant_prone_spike 你的圖片.jpg
 """
 
 import sys
@@ -23,7 +23,7 @@ from ultralytics import YOLO
 FACE_KPTS = [0, 1, 2, 3, 4]      # nose, L/R eye, L/R ear
 BODY_KPTS = list(range(5, 17))   # 肩、肘、腕、髖、膝、踝
 CONF_TH = 0.3                    # 關鍵點可見度門檻
-MODEL_PATH = Path(__file__).parent / "model" / "yolov8n-pose.pt"
+MODEL_PATH = Path(__file__).resolve().parent.parent / "model" / "yolov8n-pose.pt"
 
 
 def analyze(image_path, out_path="spike_out.jpg"):

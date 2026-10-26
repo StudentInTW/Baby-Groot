@@ -3,7 +3,7 @@ video_labels.py
 影片標註的共用讀取：eval_video.py、vlm_spike.py、crib_context.py 都用這支。
 只用標準函式庫——vlm_spike.py 跑在另一個虛擬環境（.venv-vlm，沒有 rtmlib），也能 import。
 
-標註檔（repo 根目錄）：
+標註檔（labels/）：
   doll_video_slots.csv / doll_video_labels.csv     進 repo：自己拍的娃娃影片、AI 生成影片
   local_video_slots.csv / local_video_labels.csv   不進 repo（.gitignore）：不能公開的素材（例如網路上找到的影片）。
                                                    格式相同，只在本機評估；名稱不寫進程式和公開文件
@@ -19,9 +19,9 @@ import csv
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-SLOT_FILES = (ROOT / "doll_video_slots.csv", ROOT / "local_video_slots.csv")
-LABEL_FILES = (ROOT / "doll_video_labels.csv", ROOT / "local_video_labels.csv")
+ROOT = Path(__file__).resolve().parent.parent
+SLOT_FILES = (ROOT / "labels" / "doll_video_slots.csv", ROOT / "labels" / "local_video_slots.csv")
+LABEL_FILES = (ROOT / "labels" / "doll_video_labels.csv", ROOT / "labels" / "local_video_labels.csv")
 VIDEO_DIRS = (ROOT / "dataset" / "doll_video", ROOT / "dataset")
 VIDEO_EXTS = (".MOV", ".mov", ".mp4", ".MP4")
 

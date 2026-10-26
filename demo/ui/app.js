@@ -31,7 +31,7 @@ async function loadData() {
       if (window.FIRSTGLANCE_DATA) return window.FIRSTGLANCE_DATA;
     } catch (e) { /* 試下一個 */ }
   }
-  throw new Error("No data. Run: uv run python demo_ui/export_assets.py");
+  throw new Error("No data. Run: uv run python -m demo.export_assets");
 }
 
 // ── 小工具 ──

@@ -1,212 +1,189 @@
-# 月子中心嬰兒室安全輔助 · ASUS UGen AI League
+# Baby Groot · per-crib airway watch for postpartum nurseries
 
-**English summary.** Many postpartum care centres in Taiwan already film each crib in the nursery and stream it to parents.
-Nobody watches those streams continuously: one nurse looks after several newborns. Our edge box (ASUS UGen300 /
-Hailo-10H) is designed to read those existing per-crib cameras and, when a baby's nose and mouth stay out of sight for 3 seconds
-(face-down, or covered by a blanket or swaddle), quietly tells the nurse first. It is an observation aid, not a medical
-device, and it makes no claims about SIDS.
+**ASUS UGen AI League 2026 · Battlefield Lightning · Team Baby Groot** · 中文技術說明見 [`docs/architecture.md`](./docs/architecture.md)
 
-- **How it works**: RTMO finds people and keypoints → each head is rotated upright → YuNet looks for a face; in crib mode
-  the whole crib is also searched directly, because a blanket-covered body often hides the person from the pose model.
-  A per-crib state machine raises an alert after 3 s without a visible airway. A second, independent check, a 2B
-  vision-language model (Qwen2-VL-2B, which Hailo builds for the 10H), looks at the head crop: it can add a
-  "please look", never cancel an alert. Caregiving (an adult at the crib) pauses the timer, and an empty crib turns gray
-  instead of red when it matches its empty reference image.
-- **Results so far (proxies, no real nursery data yet)**: real infant photos (SyRIP, internal only) 6.1% false alerts,
-  98.6% alerted when the airway is hidden; six doll videos, 3-s rule at 1 FPS per crib: 31/41 danger segments caught (76%),
-  7/40 false alerts; two new per-crib clips: 3/7 caught, 0/7 false alerts, the misses include an ear taken for a face;
-  laptop CPU handles about 8 cribs at 1 FPS; the VLM separated safe from dangerous head crops with AUC 0.98 on clips it
-  had never seen. Details: [`docs/architecture.md`](./docs/architecture.md), [`docs/影片測試結果.md`](./docs/影片測試結果.md).
-- **Hardware status**: the YuNet face model already compiles to a Hailo-10H HEF (Dataflow Compiler 5.4.0), and the quantized model matches
-  ONNX in the emulator (same faces found on 11 test images, scores within 0.02); the pose model
-  (RTMO-m, or YOLOX-m + RTMPose-m as a fallback) is next. Nothing has been measured on the chip yet: the UGen300 ships
-  when finalists are announced (11/02). See [`hailo/結果.md`](./hailo/結果.md).
-- **Run it**: `uv sync`, then `uv run python infant_face_v3.py your_image.jpg`. Evaluation scripts are listed below.
-  The datasets and videos are not in the repo (licensing and privacy); doll images are our own.
-  Third-party licenses: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+Many postpartum care centres in Taiwan already film every crib in the nursery from above and stream it to parents.
+Nobody watches those streams continuously: on a night shift one carer looks after several newborns. Our edge box
+(ASUS UGen300 / Hailo-10H) reads the existing per-crib cameras and, when a baby's nose and mouth stay out of sight for
+3 seconds (face-down, or covered by a blanket or swaddle), quietly tells the nurse first.
 
----
+It is an observation aid, not a medical device. It does not monitor breathing or vital signs and makes no claims about
+SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges locally and stores no video.
 
-很多產後護理之家（月子中心）的嬰兒室，本來就有每床一支的直播鏡頭（給家長看）。一台邊緣裝置（ASUS UGen300／Hailo-10H）
-判讀這些鏡頭：寶寶臉朝下、口鼻被被子或包巾蓋住，連續 3 秒看不到口鼻，就先安靜通知護理師——**讓護理師比家長先知道**。
-AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器材，不宣稱預防 SIDS。
+## Status
 
-參賽賽道：Battlefield Lightning。Stage I 提案截止 **2026/10/28**（英文簡報＋≤3 分鐘英文影片，用筆電做，不需硬體）；11/02 公布入圍、寄 UGen300。
+| Part | Status |
+| --- | --- |
+| Per-crib pipeline: pose → face → 3-second alert | Runs on a laptop CPU; evaluated on doll videos, doll photos and real infant photos |
+| Caregiving pause, empty-crib gray state | Prototype, tested on two per-crib doll clips |
+| VLM second check (Qwen2-VL-2B) | Laptop GPU experiment; moves to the Hailo-10H in Stage II |
+| YuNet face model on the Hailo-10H | **Compiled to HEF**; the quantized model matches ONNX in the emulator |
+| Pose model (RTMO-m) on the Hailo-10H | Not compiled yet; fallback is YOLOX-m + RTMPose-m |
+| On-chip speed and power | Not measured: the UGen300 ships when finalists are announced (2 Nov 2026) |
+| Real nursery footage | None yet; a silent pilot needs ethics (IRB) approval first |
 
-> **2026/10/8 方向轉向**：原題目是「托嬰中心午睡安全監看」（一台裝置看整間午睡室）。訪談與參訪發現托嬰中心的監視器裝在高處、
-> 物理上看不到臉，孩子也多半已經 7–8 個月大；月子中心的每床鏡頭從正上方拍新生兒，正好看得到臉。程式不受影響：
-> 每支鏡頭只拍一張床，就是原本的「床位模式」。托嬰時期的問卷與訪談當成前導研究。
+## How it works
 
-## 先讀這個
-
-[`docs/architecture.md`](./docs/architecture.md)：判斷流程、床位模式、床位情境（照護中、空床）、VLM 第二道檢查、v1→v5 的演進。
-測試數字：[`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)（擺拍照片）、[`docs/影片測試結果.md`](./docs/影片測試結果.md)（影片）。
-團隊內部的決策紀錄與現況在 `docs/private/`（不在 GitHub）。
-
-## 資料夾結構
-
-```
-.
-├── README.md
-├── THIRD_PARTY_NOTICES.md       # 第三方授權（repo 裡的 YuNet 要附 MIT 聲明）
-├── pyproject.toml / uv.lock     # uv 專案設定與鎖定的依賴
-├── infant_face_v3.py            # 主力：RTMO 找人 → 頭部轉正 → YuNet 找臉 → 每個寶寶口鼻看不看得到（真實嬰兒基準）
-├── infant_face_v4.py            # 實驗：v3＋口鼻膚色檢查（擋「只露眼睛」的假臉）
-├── infant_face_v5.py            # 實驗：v4＋臉分三級（正臉 ok／側臉 warn／alert）
-├── face_common.py               # 共用：門檻、YuNet 找臉、配對、畫圖（不依賴 YOLOv8）
-├── infant_face_spike.py         # v2（留著對照；要先 uv sync --group yolo）
-├── infant_prone_spike.py        # v1：關鍵點信心度規則（已知會漏報，留著對照；要先 uv sync --group yolo）
-├── eval_syrip.py                # SyRIP 真實嬰兒圖：偵測率、誤報率、姿態模型比較
-├── make_relabel_set.py / score_relabel.py   # SyRIP 誤報圖人工重標、用重標結果重算
-├── eval_doll.py                 # 娃娃擺拍照片評估（計分單位是每隻娃娃）
-├── doll_labels.csv              # 娃娃照片的人工標註
-├── eval_video.py                # 娃娃影片評估：每個床位一個警示狀態機，跟時間軸比對
-├── crib_context.py              # 每床鏡頭的床位情境（原型）：照護中暫停計時、空床灰燈
-├── demo_render.py               # 示範畫面：單床燈號與判斷依據、護理站畫面示意（娃娃影片）
-├── live_view.py                 # 示範：筆電即時判讀（按原速播娃娃影片、當場算燈號，錄螢幕用）
-├── demo_ui/                     # 示範：可以點的護理站介面原型（靜態網頁；export_assets.py 匯出真實燈號，sample/ 是假資料）
-├── video_labels.py              # 影片標註的共用讀取
-├── doll_video_slots.csv         # 影片的床位：範圍、頭朝哪邊、床頭範圍（VLM 看這裡）、空床參考畫面
-├── doll_video_labels.csv        # 影片的時間軸：每段狀態的開始、結束秒數
-├── vlm_spike.py                 # VLM 第二道檢查的實驗（另一個虛擬環境，見下）
-├── bench_multistream.py         # CPU 多路負載測試：一台主機能同時判讀幾支每床鏡頭
-├── degrade.py                   # 模擬暗光／IR 夜視（灰階、關燈）
-├── sideface_spike.py / spike_posture.py     # 早期 spike：側臉幾何、關鍵點判睡姿（結論見 docs）
-├── hailo/結果.md                # HEF 轉換結果（YuNet 已編譯；.hef 不進 repo）
-├── model/face_detection_yunet_2023mar.onnx  # 人臉偵測（OpenCV YuNet，MIT）；其他權重第一次執行時自動下載
-├── docs/
-│   ├── 任務_示範素材.md         # 影片示範素材的任務說明（開場雙畫面、介面原型、即時判讀）
-│   ├── architecture.md          # 技術架構（先讀這份）
-│   ├── 娃娃測試結果.md / 影片測試結果.md   # 測試數字、失敗模式、限制
-│   ├── 資料收集說明.md          # 娃娃照片與影片的拍攝規範
-│   ├── demo規格.md              # 托嬰中心時期的通知方式與 demo 腳本（待改成月子版）
-│   ├── 任務_HEF轉換測試.md      # 模型轉 Hailo HEF 的可行性測試
-│   └── GitHub教學.md            # 給隊友：從註冊 GitHub 到上傳自己的工作
-├── dataset/                     # 不進 repo：SyRIP、娃娃照片、娃娃影片（doll_video/，含 Harry 的時間軸 .txt）
-└── outputs/                     # 不進 repo：評估結果
+```mermaid
+flowchart LR
+  cam["Per-crib camera<br/>(existing livestream)"] --> host["Host: decode,<br/>crop the crib"]
+  host --> pose["RTMO-m pose:<br/>people + 17 keypoints"]
+  pose --> head["Rotate each head upright<br/>along the body axis"]
+  head --> face["YuNet face detector"]
+  host --> crib["Crib mode: search the whole crib,<br/>turned to its head direction"]
+  crib --> face
+  face --> vis{"Nose and mouth<br/>visible?"}
+  vis --> state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray"]
+  state --> nurse["Nurse-station screen<br/>+ silent text alert"]
+  vlm["VLM second check<br/>(Stage II)"] -.->|can ask for a look, never cancels| state
 ```
 
-**不在 GitHub 上的東西**（授權或隱私）：`dataset/`、`outputs/`、YuNet 以外的模型權重、`docs/private/`、`docs/archive/`、
-官方同意書、`local_video_*.csv`（不能公開的素材的標註，例如網路上找到的影片，只在本機評估）。需要的話跟 Harry 要。
+Each step and where it lives in the code:
 
-## 安裝
+1. **Find the people.** RTMO-m returns every person's box and 17 keypoints in one pass. Boxes with fewer than 3 visible
+   body keypoints are dropped (for example an adult's hand). `pipeline/infant_face_v3.py` (`load_rtmo`, `make_persons`)
+2. **Rotate each head upright, then look for a face.** A lying baby's face is often sideways or upside down, so the head
+   region is rotated along the hip-to-shoulder axis and enlarged before YuNet runs. YuNet also runs on the whole frame at
+   two scales. `pipeline/infant_face_v3.py` (`head_faces`), `pipeline/face_common.py` (`detect_faces`, `assign_faces`)
+3. **Crib mode.** A blanket over the body often hides the baby from the pose model while the face is still in view, so the
+   crib area itself is also searched, turned to the crib's head direction (set once at installation). A face belongs to a
+   crib by position. No face in the crib means nose and mouth are not visible. `pipeline/crib_detect.py` (`slot_faces`, `detect`)
+4. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
+   face must last 1 s before it resets the timer, so one false face does not restart the count. `CribState` pauses the
+   timer while an adult's hand moves at the crib edge, and turns an empty crib gray when it matches the crib's empty
+   reference photo. Motion never clears an alert that is already sounding. `pipeline/crib_state.py`
+5. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
+   the baby's nose and mouth?". It can raise a yellow "please look", or rank red alerts, but never cancel one: its answer
+   flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`
 
-1. `git clone https://github.com/StudentInTW/infant-nap-guard.git`，進到資料夾。第一次用 GitHub 的隊友看 [`docs/GitHub教學.md`](./docs/GitHub教學.md)。
-2. 安裝 [uv](https://docs.astral.sh/uv/)，執行 `uv sync`（約 200 MB，不含 YOLOv8 和 PyTorch）。
-3. 試跑：`uv run python infant_face_v3.py 你的圖片.jpg`。第一次執行會自動下載 RTMO 模型（約 80 MB）。
+**Key design choice:** a face detector decides whether the face is visible, not the pose model's keypoint confidence.
+Keypoint confidence is trained on "was this point annotated", not "can it be seen": a baby with its face in the sheet
+still gets confident nose and eye keypoints. The pose model says where each person and head is; the face detector says
+whether the face can be seen.
 
-輸出在 `outputs/<檔名>_v3.jpg`：紅框＝臉看不見（ALERT）、綠框＝臉看得到、黃框＝偵測到的臉。
-舊版 v1、v2 要用 YOLOv8（AGPL），先 `uv sync --group yolo`（會多裝 PyTorch）。
+## Hardware integration
 
-## 評估
+| Runs on | What |
+| --- | --- |
+| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m (or YOLOX-m + RTMPose-m) and YuNet; in Stage II also the Qwen2-VL-2B second check |
+| Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), per-crib state machines, event log |
 
-### 娃娃影片：床位模式＋3 秒警示
+- **HEF compilation** ([`hailo/結果.md`](./hailo/結果.md), plan in [`hailo/轉換計畫.md`](./hailo/轉換計畫.md)):
+  YuNet compiles to a Hailo-10H HEF (Dataflow Compiler 5.4.0, target `hailo10h`), with its raw outputs decoded on the
+  host. Quantized with 256 random COCO 2017 val images. In the emulator the quantized model finds the same faces as ONNX on
+  11 test images (19 faces), scores within 0.018, boxes mostly within 0.2–1.2 px. RTMO-m is next and is the riskiest: its
+  ONNX file includes decoding with a dynamic number of people, so the end node must be cut before decoding and the decoding
+  rewritten for the host.
+- **Why the 10H:** its 8 GB of memory lets a 2B vision-language model sit on the same USB accelerator as the detectors.
+  USB is enough bandwidth for small crops at 1 frame per second per crib, and it plugs into an ordinary PC.
+- **CPU baseline** (`evaluation/bench_multistream.py`, Intel i7-11800H): the full pipeline takes about 170–190 ms per frame,
+  so one laptop handles about 8 cribs at 1 FPS. 70–80% of that is the pose model, which is the part that moves to the NPU.
+- **Host bottleneck:** H.264/H.265 streams must be decoded at full frame rate even if we judge 1 frame per second, so the host
+  should use the cameras' sub-streams or hardware decoding.
+
+## Results so far
+
+These are proxies: real infant photos taken at home, dolls, and simulations. There is no real nursery data yet.
+
+| Test | Result (v3, the baseline) |
+| --- | --- |
+| Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found; 6.1% false alerts when the face is visible; 98.6% alerted when it is hidden |
+| Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
+| Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 31/41 danger segments caught (76%), 7/40 safe segments with a false alert; 5 FPS: 32/41 and 8/40 |
+| Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
+| Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts |
+| VLM second check (laptop GPU, 2 unseen clips) | Safe vs dangerous head crops AUC 0.98; found all 13 frames the detector missed, at the cost of 9 extra look requests on safe frames |
+| Simulated night (grayscale, software only) | Real infant false alerts rise from 6.1% to 18.3%; not a substitute for real IR footage |
+
+Details, failure cases and the experimental v4/v5 variants: [`docs/architecture.md`](./docs/architecture.md),
+[`docs/影片測試結果.md`](./docs/影片測試結果.md), [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md).
+
+## Quick start
+
+Install [uv](https://docs.astral.sh/uv/), then from the repository root:
 
 ```bash
-uv run python eval_video.py                  # 全部娃娃影片（每支約 2–5 分鐘）
-uv run python eval_video.py IMG_8429         # 只跑一支
-uv run python eval_video.py --reuse --on 2   # 不重跑偵測，只換警示規則重算
+uv sync
+uv run python -m pipeline.infant_face_v3 your_photo.jpg
 ```
 
-每秒取 5 幀，每個床位一個警示狀態機（預設連續 3 秒看不到口鼻才警示、連續 2 秒看得到才解除），比較 v3、v3＋床位、v4＋床位、v5＋床位。
-時間軸只列手不在畫面裡的乾淨片段；`label` 另有 `empty`（空床），`staged` 另有 `prone`（趴睡但口鼻看得到），都另外統計、不算進誤報。
-結果在 `outputs/video_eval/`：時間軸對照圖、標註影片、每幀判定。非娃娃的 `嬰兒翻身`（AI 生成的灰階夜視畫面）要指定名稱才跑。
+`uv sync` installs about 200 MB and no PyTorch. The first run downloads RTMO-m (about 80 MB). The result is saved to
+`outputs/your_photo_v3.jpg`: red box = face not visible (alert), green = visible, yellow = detected face.
 
-### 每床鏡頭的床位情境：照護中、空床
+Every script runs from the repository root as a module (`python -m folder.script`).
+
+### Evaluation
+
+The datasets are not in the repository (licensing and privacy): our doll photos and videos are available from the team,
+SyRIP from its authors. Results are written to `outputs/`.
 
 ```bash
-uv run python crib_context.py                # 要先跑過 eval_video.py（讀它存的每幀判定）
+uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts
+uv run python -m evaluation.eval_video --reuse --on 2  # recompute with another alert rule, no new detection
+uv run python -m evaluation.crib_context             # caregiving pause + empty crib (run eval_video first)
+uv run python -m evaluation.eval_doll --det-th 0.15  # doll photos, scored per doll
+uv run python -m evaluation.eval_syrip --face v3     # real infant photos (dataset/SyRIP_Posture.zip)
+uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels
+uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles
 ```
 
-床位邊緣有動作（大人伸手進來）→ 照護中、暫停計時；大人離開後臉不見、畫面又跟這張床的空床參考畫面相符 → 空床（灰燈），不響。
-空床參考在 `doll_video_slots.csv` 的 `empty_ref` 欄。結果在 `outputs/crib_context/`，說明見 [`docs/影片測試結果.md`](./docs/影片測試結果.md) §3h。
+Add `--gray` and/or `--dim 0.3` to `eval_video`, `eval_doll` or `eval_syrip` to simulate an IR night view; those results go
+to separate folders.
 
-### SyRIP 真實嬰兒圖（誤報率）
+### Demo
 
 ```bash
-uv run python eval_syrip.py --face v3        # 讀 dataset/SyRIP_Posture.zip，不用解壓；CPU 約 10 分鐘
-uv run python score_relabel.py               # 用人工重標結果重算誤報率、漏判率
+uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed
+uv run python -m demo.demo_render IMG_8432 --start 80 --end 112   # single crib: camera + light + reasons
+uv run python -m demo.demo_render --grid              # nurse-station mock-up (8 cribs)
+uv run python -m demo.export_assets                   # export real lights for the clickable UI
 ```
 
-**SyRIP 的圖只能內部評估**：`outputs/syrip_eval/` 的東西不可放進簡報、影片或 GitHub。用 `--limit` 試跑會覆蓋同名的 CSV。
-誤報圖人工重標：`uv run python make_relabel_set.py` 產生資料包，填好的 `labels.csv` 存成 `outputs/relabel_syrip_labels.csv` 後再跑 `score_relabel.py`。
+The clickable nurse-station prototype is `demo/ui/index.html`: open it in a browser, no server needed. Without exported
+data it uses the synthetic sample in `demo/ui/sample/`.
 
-### 娃娃擺拍照片
-
-```bash
-uv run python eval_doll.py --det-th 0.15             # 建議參數：找人門檻降到 0.15
-uv run python eval_doll.py --face v4 --det-th 0.15   # v4（實驗版）
-```
-
-**計分單位是每隻娃娃**：一張照片兩隻都危險、只抓到一隻時，用整張圖算會被判對。數字和失敗模式見 [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md)。
-
-### CPU 多路負載
-
-```bash
-uv run python bench_multistream.py                         # 720p、1080p，1–16 個工作程序
-uv run python bench_multistream.py --res 720 --workers 1 8 --sec 10   # 試跑
-```
-
-### VLM 第二道檢查（實驗，需要 NVIDIA GPU）
-
-另開虛擬環境，主程式不需要 PyTorch：
+### VLM second check (experiment, NVIDIA GPU)
 
 ```bash
 uv venv .venv-vlm --python 3.12
 uv pip install --python .venv-vlm torch torchvision --index-url https://download.pytorch.org/whl/cu126
 uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-python pillow
-.venv-vlm/Scripts/python vlm_spike.py IMG_8429 IMG_8432    # 要先跑過 eval_video.py
+.venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432   # run eval_video first
 ```
 
-Qwen2-VL-2B-Instruct（Apache-2.0），語言模型 4-bit；每幀問「看得到鼻子和嘴巴嗎」等三題，取 Yes／No 的機率。
-加 `--every 1` 改成整支影片每秒問一次口鼻題（給示範畫面用）。
+## Repository layout
 
-### 示範畫面
-
-```bash
-uv run python demo_render.py IMG_8432 --start 80 --end 112   # 單床：左邊鏡頭、右邊燈號與判斷依據
-uv run python demo_render.py --grid                          # 護理站畫面示意（8 格都是同兩支娃娃影片）
-uv run python demo_render.py --split                         # 開場雙畫面：左家長手機、右護理站＋護理師推播（IMG_8432 86–100 秒）
+```
+pipeline/       the per-crib pipeline (the part that runs on the edge box)
+  infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (baseline)
+  infant_face_v4.py   experiment: v3 + mouth-skin check
+  infant_face_v5.py   experiment: v4 + three face levels (ok / warn / alert)
+  face_common.py      thresholds, YuNet face search, matching faces to people, drawing
+  crib_detect.py      one frame: is the face visible in each crib (crib mode)
+  crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib
+evaluation/     evaluation scripts and their helpers (label loading, simulated night view)
+demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
+experiments/    earlier versions (v1, v2) and exploratory spikes, kept for comparison
+hailo/          HEF conversion plan and results
+labels/         our annotations: doll photos, crib areas and timelines for the doll videos
+model/          YuNet face detector (MIT); other weights download on first run
+docs/           technical write-up and test reports (Chinese)
 ```
 
-要先跑過 `eval_video.py`；有 `vlm_spike.py --every 1` 的結果就會畫出 VLM 的「請看一眼」（黃燈）。輸出在 `outputs/demo/`。
+## Data, privacy and licences
 
-**可以點的護理站介面原型**（`demo_ui/`，給操作示範錄螢幕）：
+- No real infant images are in this repository. The doll photos and videos are our own. Public datasets (SyRIP) and any
+  footage found online are used for internal evaluation only and are never committed.
+- The system judges each frame locally and keeps only text events; it makes no new copy of the video and uploads nothing.
+- Third-party components and their licences: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md). The optional
+  `yolo` dependency group (Ultralytics, AGPL-3.0) is used only by the early v1/v2 experiments, not by the pipeline.
 
-```bash
-uv run python demo_ui/export_assets.py    # 匯出 8 床的真實燈號和剪好的影片 → demo_ui/data/、demo_ui/media/（不進 repo）
-```
+## Known limitations
 
-然後用瀏覽器開 `demo_ui/index.html`（雙擊即可，不用架伺服器、不連外）。畫面：安裝（框床位、標床頭、拍空床照）→
-護理站牆面（8 床同步播放）→ 點一床看詳細 → 紅燈時按 Acknowledge → 右上角 📱 開關護理師手機（推播只有文字）。
-空白鍵播放／暫停、⟲ 從頭開始。沒有 `data/` 時自動用 `sample/` 的假資料（網址加 `?sample` 強制使用）。
-
-**筆電即時判讀**（不是事先算好的：按原速播放、當場跑 v3＋床位＋床位情境，右上角顯示每幀毫秒數與 FPS）：
-
-```bash
-uv run python live_view.py IMG_8432 --start 80     # q／Esc 結束、空白鍵暫停；加 --save 檔名.mp4 同時存一份
-```
-
-錄螢幕用 Windows 的 Win+Alt+R 或 OBS。VLM 不即時跑，畫面上不顯示。
-
-### 模擬暗光／IR 夜視
-
-三支評估都能加 `--gray`（去掉顏色）和 `--dim 0.3`（亮度 ×0.3 加雜訊），結果另外放、不蓋掉原圖基準。這只是近似，要驗證還是得用夜視攝影機實拍。
-
-## 現在進度（2026/10/26）
-
-- **真實嬰兒基準是 v3**：SyRIP 700 張（人工重標）偵測率 97.7%、口鼻看得到時誤報 6.1%、口鼻看不到時 98.6% 會警示。SyRIP 是清醒的居家照片，不是嬰兒室。
-- **娃娃擺拍**（114 張、185 隻）：臉朝下趴睡 25/25 會警示、誤報 4.4%；床位模式把警示召回從 62% 拉到 90%。
-- **娃娃影片**（6 支，3 秒規則）：v3＋床位危險片段抓到 31/41（76%，每床 1 FPS）、安全片段誤報 7/40。
-  10/10 補拍的兩支每床鏡頭影片：3/7、誤報 0/7。新發現的漏抓：頭轉開時偵測器把**耳朵當成臉**；只蓋住嘴、眼睛露出也還會漏。
-- **床位情境（原型）**：兩段空床結束時都是灰燈（原本一直響）、沒有危險片段被判成空床、沒有新增誤報。
-- **運算量**：筆電 CPU（i7-11800H）完整流程每床 1 FPS 可同時判讀約 8 床，其中 7–8 成運算是姿態模型（要搬上 UGen300 的部分）。
-- **VLM 第二道檢查**（筆電 GPU）：在沒看過的兩支影片上分辨安全／危險的頭部畫面 AUC 0.98；偵測器漏掉的 13 幀全部補到，安全畫面多 9 次提醒；判不出趴睡。只能加「請看一眼」，不能取消警示。
-- **HEF 轉換**：YuNet 已編譯成 Hailo-10H HEF（DFC 5.4.0），量化後模擬器跟 ONNX 幾乎一樣；姿態模型（RTMO-m 或備案 YOLOX-m＋RTMPose-m）還沒試。見 [`hailo/結果.md`](./hailo/結果.md)。
-- **還沒有**：真實嬰兒室畫面、新生兒影片、實機（晶片 11/02 公布入圍後才寄到）。真實場域測試要等 IRB 核准（Stage II）。
-
-細節見 [`docs/architecture.md`](./docs/architecture.md)、[`docs/影片測試結果.md`](./docs/影片測試結果.md)。
-
-## 範圍護欄（Stage I 不要做）
-
-晶片 11/02 公布入圍後才到，任何「跑在 UGen300 實機上」的事（部署、量化、實機效能）**全部等入圍**；Stage I 只在筆電上做概念驗證，唯一例外是 HEF 轉換可行性測試（不需要晶片）。Stage I 不訓練模型。交付物是**英文**。
+- No real newborns or real nursery footage yet; every number above comes from a proxy.
+- When the head turns away, YuNet can take an ear for a face, so a hidden airway stays green. The Stage II VLM check flags
+  these frames (13/13 on the doll clips).
+- A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
+- Night (IR) footage is only simulated, and grayscale raises false alerts.
+- Spit-up is not detected; it is a Stage II research item.
+- Getting the per-crib streams depends on the livestream vendors; that is part of Stage II.

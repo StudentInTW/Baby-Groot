@@ -8,14 +8,14 @@ demo_render.py
   紅  連續 3 秒看不到 → 推播給護理師
   藍  照護中（大人在床邊），暫停計時
   灰  空床
-資料來源：eval_video.py 的每幀判定（v3＋床位）、crib_context.py 的照護中／空床狀態機、
+資料來源：eval_video.py 的每幀判定（v3＋床位）、crib_state.py 的照護中／空床狀態機、
 vlm_spike.py --every 的 VLM 時間軸（有的話；連續 VLM_HOLD 次 P(看得到口鼻) < VLM_TH 才亮「請看一眼」）。
 臉框是重跑偵測畫的（只跑輸出的那一段）。
 
 用法：
-    uv run python demo_render.py IMG_8432 --start 30 --end 70   # 單床：左邊鏡頭、右邊燈號與判斷依據
-    uv run python demo_render.py --grid                          # 護理站畫面示意：8 格（GRID），每格循環播一段娃娃影片
-    uv run python demo_render.py --split                         # 開場雙畫面：左家長手機、右護理站（預設 IMG_8432 86–100 秒）
+    uv run python -m demo.demo_render IMG_8432 --start 30 --end 70   # 單床：左邊鏡頭、右邊燈號與判斷依據
+    uv run python -m demo.demo_render --grid                          # 護理站畫面示意：8 格（GRID），每格循環播一段娃娃影片
+    uv run python -m demo.demo_render --split                         # 開場雙畫面：左家長手機、右護理站（預設 IMG_8432 86–100 秒）
 輸出：outputs/demo/<影片>_<開始>-<結束>.mp4、outputs/demo/nurse_station.mp4、outputs/demo/split_open.mp4（1920×1080）
 護理站畫面是示意：8 張床都是同兩支娃娃影片的不同片段，燈號是系統對那一段的真實判定。
 開場雙畫面的燈號也是系統真實輸出；家長手機畫面和護理師手機推播是介面原型（畫面角落標 PROTOTYPE_TAG）。
@@ -31,15 +31,13 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-import crib_context
-import eval_video
-import infant_face_v5
-import video_labels
-from face_common import FACE_MODEL, FACE_SCORE_TH
-from infant_face_v3 import load_rtmo
-from video_labels import read_csv
+from evaluation import crib_context, eval_video, video_labels
+from pipeline import crib_detect, crib_state, infant_face_v5
+from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
+from pipeline.infant_face_v3 import load_rtmo
+from evaluation.video_labels import read_csv
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "outputs" / "demo"
 VLM_TH = 0.4     # P(看得到口鼻) 低於這個算「VLM 說看不到」（vlm_spike.py：漏掉的危險幀 13/13、安全幀多 9/38）
 VLM_HOLD = 2     # 連續幾次（每秒一次）才亮「請看一眼」
@@ -106,7 +104,7 @@ def timeline_states(name, slot, end):
     frames = {float(r["t"]): r for r in read_csv(eval_video.OUT_DIR / f"{name}_frames.csv")}
     vlm_path = ROOT / "outputs" / "vlm_spike" / f"timeline_{name}.csv"
     vlm = [(float(r["t"]), float(r["p_mouth"])) for r in read_csv(vlm_path)] if vlm_path.exists() else []
-    ctx, rows = crib_context.CribState(), []
+    ctx, rows = crib_state.CribState(), []
     for t, motion, diff in crib_context.features(name, slot):
         if t > end + 0.5:
             break
@@ -120,15 +118,15 @@ def timeline_states(name, slot, end):
         since = ctx.alarm.since_hidden
         show = display_state(ctx, state, hidden, vlm_hidden)
         rows.append({"t": t, "show": show, "hidden": hidden, "count": t - since if since is not None else 0.0,
-                     "adult": ctx.last_motion is not None and t - ctx.last_motion < crib_context.CARE_HOLD,
-                     "matches": diff is not None and diff < crib_context.EMPTY_TH,
+                     "adult": ctx.last_motion is not None and t - ctx.last_motion < crib_state.CARE_HOLD,
+                     "matches": diff is not None and diff < crib_state.EMPTY_TH,
                      "vlm": checks[-1] if checks else None})
     return rows
 
 
 def face_boxes(name, ann, start, end):
     """重跑偵測（只跑輸出的那一段），回傳 {取樣時刻: [臉框, ...]}。找人門檻跟 eval_video.py 一致（0.15），臉框才對得上燈號。"""
-    import infant_face_v3
+    from pipeline import infant_face_v3
     infant_face_v3.DET_TH = 0.15
     run_pose = load_rtmo()
     det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
@@ -145,7 +143,7 @@ def face_boxes(name, ann, start, end):
             break
         if t >= start - 0.3 and i % step == 0:
             _, frame = cap.retrieve()
-            _, _, faces = eval_video.detect(run_pose, det, det_v5, frame, slots, rots)
+            _, _, faces = crib_detect.detect(run_pose, det, det_v5, frame, slots, rots)
             boxes[t] = [tuple(int(v) for v in f[:4]) for f in faces]
         i += 1
     return boxes

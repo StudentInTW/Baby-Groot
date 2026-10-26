@@ -14,7 +14,7 @@ make_relabel_set.py
   outputs/relabel_syrip_key.csv   編號 → SyRIP 檔名、挑選原因（自己留著，不要給標註的人）
 
 用法：
-    uv run python make_relabel_set.py
+    uv run python -m evaluation.make_relabel_set
 """
 
 import csv
@@ -25,9 +25,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from eval_syrip import OUT_DIR as EVAL_DIR, load_syrip
+from evaluation.eval_syrip import OUT_DIR as EVAL_DIR, load_syrip
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 PKG = ROOT / "outputs" / "relabel_syrip"
 KEY = ROOT / "outputs" / "relabel_syrip_key.csv"
 N_OK = 30         # 抽查幾張系統都判 OK 的圖

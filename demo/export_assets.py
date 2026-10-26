@@ -1,6 +1,6 @@
 """
-demo_ui/export_assets.py
-把系統對娃娃影片的真實判定匯出給 demo_ui/（可以點的護理站介面原型，給影片的操作示範錄螢幕用）。
+demo/export_assets.py
+把系統對娃娃影片的真實判定匯出給 demo/ui/（可以點的護理站介面原型，給影片的操作示範錄螢幕用）。
 
 每床（demo_render.GRID 的 8 床，07 號是主角）：
   - 燈號：demo_render.timeline_states()（eval_video.py 的每幀判定＋crib_context.py 的照護中／空床狀態機
@@ -9,28 +9,24 @@ demo_ui/export_assets.py
 輸出成 data/cribs.js（網頁用：直接用 <script> 載入，雙擊 index.html 用 file:// 開也能讀）和 data/cribs.json（同內容，給人看）。
 
 用法（在 repo 根目錄）：
-    uv run python demo_ui/export_assets.py            # 真資料 → demo_ui/data/、demo_ui/media/（不進 repo）
-    uv run python demo_ui/export_assets.py --sample   # 假資料（合成畫面＋寫死的燈號）→ demo_ui/sample/（進 repo，雲端開發用）
+    uv run python -m demo.export_assets            # 真資料 → demo/ui/data/、demo/ui/media/（不進 repo）
+    uv run python -m demo.export_assets --sample   # 假資料（合成畫面＋寫死的燈號）→ demo/ui/sample/（進 repo，雲端開發用）
 要先跑過 eval_video.py（每幀判定）；有 vlm_spike.py --every 1 的結果才會有黃燈「請看一眼」。
-然後用瀏覽器開 demo_ui/index.html（沒有 data/ 時自動改用 sample/；網址加 ?sample 強制用假資料）。
+然後用瀏覽器開 demo/ui/index.html（沒有 data/ 時自動改用 sample/；網址加 ?sample 強制用假資料）。
 """
 
 import argparse
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+import cv2
+import numpy as np
 
-import cv2  # noqa: E402
-import numpy as np  # noqa: E402
+from demo import demo_render
+from evaluation import video_labels
 
-import demo_render  # noqa: E402
-import video_labels  # noqa: E402
-
-UI_DIR = Path(__file__).resolve().parent
+UI_DIR = Path(__file__).resolve().parent / "ui"
 STEP = 0.2       # 燈號每幾秒一筆（跟每秒 5 幀的判定一樣密）
 CLIP_H = 720     # 剪出來的影片高度（單床詳細畫面會放大顯示）
 
@@ -188,7 +184,7 @@ def export_sample():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[2])
-    ap.add_argument("--sample", action="store_true", help="產生假資料到 demo_ui/sample/（不需要娃娃影片）")
+    ap.add_argument("--sample", action="store_true", help="產生假資料到 demo/ui/sample/（不需要娃娃影片）")
     args = ap.parse_args()
     export_sample() if args.sample else export_real()
 

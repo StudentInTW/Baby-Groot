@@ -42,7 +42,7 @@ SOFTWARE.
 | OpenCV (`opencv-python`) | Image and video I/O, YuNet inference | Apache-2.0 (OpenCV), MIT (packaging) |
 | ONNX Runtime | Inference backend for rtmlib | MIT |
 | Pillow | Image handling | MIT-CMU |
-| Qwen2-VL-2B-Instruct | Experimental VLM second check (`vlm_spike.py`, separate environment) | Apache-2.0 |
-| Ultralytics YOLOv8 (optional `yolo` dependency group) | Only the early v1/v2 scripts and the YOLOv8 comparison in `eval_syrip.py`; not part of the v3 pipeline | AGPL-3.0 |
+| Qwen2-VL-2B-Instruct | Experimental VLM second check (`experiments/vlm_spike.py`, separate environment) | Apache-2.0 |
+| Ultralytics YOLOv8 (optional `yolo` dependency group) | Only the early v1/v2 scripts and the YOLOv8 comparison in `evaluation/eval_syrip.py`; not part of the v3 pipeline | AGPL-3.0 |
 
 Compiled Hailo files (`.hef`, `.har`) are not included; see [`hailo/結果.md`](hailo/結果.md).

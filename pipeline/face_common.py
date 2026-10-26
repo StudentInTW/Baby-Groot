@@ -13,7 +13,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設�
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 FACE_MODEL = ROOT / "model" / "face_detection_yunet_2023mar.onnx"
 OUT_DIR = ROOT / "outputs"
 

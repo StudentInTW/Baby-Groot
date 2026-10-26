@@ -19,11 +19,11 @@ VLM 複判 spike（2026/10/9，實驗，還沒進主流程）——兩個問題�
     uv pip install --python .venv-vlm torch torchvision --index-url https://download.pytorch.org/whl/cu126
     uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-python pillow
 用法：
-    .venv-vlm/Scripts/python vlm_spike.py                # 全部片段
-    .venv-vlm/Scripts/python vlm_spike.py --limit 10     # 試跑前 10 幀
-    .venv-vlm/Scripts/python vlm_spike.py --reuse        # 不重跑 VLM，用上次的 frames.csv 重算摘要
-    .venv-vlm/Scripts/python vlm_spike.py IMG_8429 IMG_8432   # 只跑指定影片（驗證門檻用），存成 frames_<影片>.csv
-    .venv-vlm/Scripts/python vlm_spike.py IMG_8432 --every 1  # 整支影片每 1 秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv
+    .venv-vlm/Scripts/python -m experiments.vlm_spike                # 全部片段
+    .venv-vlm/Scripts/python -m experiments.vlm_spike --limit 10     # 試跑前 10 幀
+    .venv-vlm/Scripts/python -m experiments.vlm_spike --reuse        # 不重跑 VLM，用上次的 frames.csv 重算摘要
+    .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432   # 只跑指定影片（驗證門檻用），存成 frames_<影片>.csv
+    .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8432 --every 1  # 整支影片每 1 秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv
 輸出：outputs/vlm_spike/frames.csv（每幀的機率）、crops/（餵給 VLM 的裁切圖，方便人工檢查）、終端機摘要
 """
 
@@ -36,10 +36,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import video_labels
-from video_labels import read_csv
+from evaluation import video_labels
+from evaluation.video_labels import read_csv
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 ANNOTATIONS = video_labels.load()
 NOT_DOLL = {"嬰兒翻身"} | {v for v, a in ANNOTATIONS.items() if a["local"]}  # AI 生成影片、local 標註的影片不算娃娃
 EVAL_DIR = ROOT / "outputs" / "video_eval"

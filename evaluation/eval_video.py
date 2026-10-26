@@ -4,7 +4,7 @@ eval_video.py
   - 危險片段有沒有發出警示（危險持續到片段結束時，系統是不是在響）
   - 安全片段會不會亂叫（誤報）
 
-標註（repo 根目錄，讀取見 video_labels.py；不能公開的素材另放不進 repo 的 local_video_*.csv）：
+標註（labels/，讀取見 video_labels.py；不能公開的素材另放不進 repo 的 local_video_*.csv）：
   doll_video_slots.csv   每支影片、每隻娃娃一個床位方框（畫面比例座標），和床位方向 rot
                          （把床位轉正要轉幾度；安裝時設定頭朝哪邊）。頭在框裡的人就算這個床位。
   doll_video_labels.csv  每段狀態的開始、結束秒數。只列手不在畫面裡的乾淨片段；
@@ -12,20 +12,16 @@ eval_video.py
                          empty 空床——寶寶被抱走，系統不該響）。staged＝prone 是「趴睡但口鼻看得到」：
                          政策上要警示、但口鼻判定本來就抓不到，另外列，不算進誤報。
 
-比較三種判定：
-  v3        床位裡偵測到人、那個人找不到臉 → 看不到口鼻；床位裡沒偵測到人 → 不警示（v3 本來的行為）
-  v3＋床位  床位模式（docs/娃娃測試結果.md §4）：除了透過人找臉，也直接在床位範圍依床位方向轉正後找臉
-            ——身體被被子蓋住、姿態模型找不到人時，臉露出來還是找得到。床位裡找不到臉就算看不到口鼻。
-  v4＋床位  再加口鼻檢查（infant_face_v4.py，實驗版）
-警示規則：每個床位各自一個狀態機，連續 --on 秒看不到 → 警示；連續 --off 秒看得到 → 解除；
+比較四種判定（v3、v3＋床位、v4＋床位、v5＋床位；每幀的判定在 pipeline/crib_detect.py）。
+警示規則（pipeline/crib_state.py 的 AlertState）：每個床位各自一個狀態機，連續 --on 秒看不到 → 警示；連續 --off 秒看得到 → 解除；
 看得到要持續 --blip 秒以上才會把「看不到」的計時歸零（防閃爍）。
 
 用法：
-    uv run python eval_video.py                  # 跑 doll_video_labels.csv 裡所有娃娃影片（不含 NOT_DOLL 和 local 標註的影片）
-    uv run python eval_video.py IMG_8150         # 只跑一支
-    uv run python eval_video.py 嬰兒翻身          # 非娃娃的影片（NOT_DOLL、local 標註）要指定名稱才跑
-    uv run python eval_video.py --reuse          # 不重跑偵測，用上次存的每幀結果重算（改 --on/--off 時用）
-    uv run python eval_video.py --gray --dim 0.3 # 模擬補光不夠的 IR 夜視（見 degrade.py）
+    uv run python -m evaluation.eval_video                  # 跑 doll_video_labels.csv 裡所有娃娃影片（不含 NOT_DOLL 和 local 標註的影片）
+    uv run python -m evaluation.eval_video IMG_8150         # 只跑一支
+    uv run python -m evaluation.eval_video 嬰兒翻身          # 非娃娃的影片（NOT_DOLL、local 標註）要指定名稱才跑
+    uv run python -m evaluation.eval_video --reuse          # 不重跑偵測，用上次存的每幀結果重算（改 --on/--off 時用）
+    uv run python -m evaluation.eval_video --gray --dim 0.3 # 模擬補光不夠的 IR 夜視（見 degrade.py）
 輸出：outputs/video_eval/<影片>_frames.csv（每幀判定）、<影片>_timeline.png（時間軸對照圖）、
       <影片>_preview.mp4（標註影片，縮小版）；--gray/--dim 的結果放 outputs/video_eval_<條件>/
 """
@@ -42,25 +38,21 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-import infant_face_v3
-import infant_face_v4
-import infant_face_v5
-from degrade import degrade, describe, tag
-from face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, assign_faces, put_label
-from infant_face_v3 import load_rtmo, make_persons
-import video_labels
-from video_labels import read_csv
+from evaluation import video_labels
+from evaluation.degrade import degrade, describe, tag
+from evaluation.video_labels import read_csv
+from pipeline import infant_face_v3, infant_face_v4, infant_face_v5
+from pipeline.crib_detect import MODES, detect
+from pipeline.crib_state import AlertState
+from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, put_label
+from pipeline.infant_face_v3 import load_rtmo
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 # 不是娃娃的影片要指定名稱才跑，不混進娃娃影片的合計（數字才跟之前的對得上）；local_ 標註檔裡的影片也一樣
 NOT_DOLL = {"嬰兒翻身"}  # 嘉晏哥哥提供的 AI 生成影片：灰階夜視俯拍，一個嬰兒仰→側→趴（dataset/嬰兒翻身.mp4）
 OUT_DIR = ROOT / "outputs" / "video_eval"
-MODES = ("v3", "v3_slot", "v4_slot", "v5_slot")
 MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot", "v5_slot": "v5+slot"}
 PREVIEW_W = 540     # 標註影片的寬度
-SLOT_INPUT = 640    # 床位範圍縮到長邊這麼多像素再找臉
-SLOT_FACE_TH = 0.8  # 床位範圍找到的臉要多高分才算（跟 v3 頭部裁切一樣：裁切後比較容易把抱枕圖案看成臉）
-ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
 
 def load_annotations():
@@ -74,111 +66,6 @@ def load_annotations():
 def gt_at(segments, doll, t):
     """這一刻這隻娃娃的標註；落在過渡期（不計分）就回傳 None。"""
     return next((s for s in segments if s["doll"] == doll and s["start"] <= t <= s["end"]), None)
-
-
-def slot_faces(detector, frame, rect, rot, min_score=SLOT_FACE_TH):
-    """在床位範圍裡找臉：依床位方向轉正後找，框和特徵點換回原圖座標。min_score 可降低以抓側臉（v5）。"""
-    h, w = frame.shape[:2]
-    x0, y0 = int(rect[0] * w), int(rect[1] * h)
-    crop = frame[y0:int(rect[3] * h), x0:int(rect[2] * w)]
-    s = min(1.0, SLOT_INPUT / max(crop.shape[:2]))
-    if s < 1:
-        crop = cv2.resize(crop, (round(crop.shape[1] * s), round(crop.shape[0] * s)), interpolation=cv2.INTER_AREA)
-    ch, cw = crop.shape[:2]
-    img = cv2.rotate(crop, ROTATE[rot]) if rot else crop
-    detector.setInputSize((img.shape[1], img.shape[0]))
-    _, found = detector.detect(img)
-    faces = []
-    for f in [] if found is None else found:
-        if f[-1] < min_score:
-            continue
-        pts = np.vstack([f[:2], f[:2] + f[2:4], f[4:14].reshape(5, 2)]).astype(np.float64)  # 框的兩角＋5 個特徵點
-        u, v = pts[:, 0].copy(), pts[:, 1].copy()
-        if rot == 90:        # 轉正後的座標 (u, v) → 轉正前的裁切座標 (x, y)
-            pts[:, 0], pts[:, 1] = v, ch - u
-        elif rot == 180:
-            pts[:, 0], pts[:, 1] = cw - u, ch - v
-        elif rot == 270:
-            pts[:, 0], pts[:, 1] = cw - v, u
-        pts = pts / s + (x0, y0)
-        (bx0, by0), (bx1, by1) = pts[:2].min(axis=0), pts[:2].max(axis=0)
-        faces.append(infant_face_v4.Face((bx0, by0, bx1, by1, float(f[-1])), pts[2:]))
-    return faces
-
-
-def detect(run_pose, detector, det_v5, frame, slots, rots):
-    """一幀：回傳每個床位在四種判定下的狀態，和畫圖用的偵測結果。
-    狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人（只有 v3 會出現）。
-    v5 額外輸出三級 tier（ok 正臉／warn 側臉／alert）；binary 狀態把 ok、warn 都當 visible（不硬警示）。"""
-    h, w = frame.shape[:2]
-    persons = make_persons(run_pose(frame))
-    faces = infant_face_v4.detect_faces_v4(detector, frame, persons)  # 跟 v3 找到的臉逐一相同，多帶特徵點
-    assign_faces(persons, faces)
-    v3_faces = [list(p["faces"]) for p in persons]
-    infant_face_v4.drop_covered_faces(frame, persons)
-    v4_faces = [list(p["faces"]) for p in persons]
-
-    result, extra = {}, []
-    for doll, (x0, y0, x1, y1) in slots.items():
-        def in_slot(x, y):
-            return x0 * w <= x <= x1 * w and y0 * h <= y <= y1 * h
-
-        def face_in_slot(f):
-            return in_slot((f[0] + f[2]) / 2, (f[1] + f[3]) / 2)
-
-        inside = [i for i, p in enumerate(persons) if in_slot(*p["head"])]
-        found = slot_faces(detector, frame, (x0, y0, x1, y1), rots[doll])
-        for f in found:
-            f.skin = infant_face_v4.mouth_skin_ratio(frame, f.lm)
-        extra += found
-        # v3：照原本的做法，床位裡的人有臉就算看得到（臉在哪都算）
-        any_v3 = any(v3_faces[i] for i in inside)
-        # 床位模式：臉要落在這個床位裡才算（依位置，不透過人框——兩隻被框成一個人時才不會互相拿走對方的臉）
-        slot_v3 = any(face_in_slot(f) for fs in v3_faces for f in fs) or bool(found)
-        slot_v4 = any(face_in_slot(f) for fs in v4_faces for f in fs) \
-            or any(f.skin >= infant_face_v4.MOUTH_SKIN_MIN for f in found)
-        # v5：混合三級——backbone 用 v4_slot（保住召回），visible 再分正臉 ok／側臉 warn；
-        #     backbone 判 alert 時，只有低門檻找到「乾淨側臉」才把 alert 降成 warn（found5）
-        backbone5 = [f for fs in v4_faces for f in fs if face_in_slot(f)] + list(found)
-        found5 = slot_faces(det_v5, frame, (x0, y0, x1, y1), rots[doll], min_score=infant_face_v5.FACE_TH_V5)
-        v5_tier = infant_face_v5.tier_hybrid(slot_v4, backbone5, found5, frame)
-        result[doll] = {
-            "persons": len(inside),
-            "v3": "visible" if any_v3 else ("hidden" if inside else "none"),
-            "v3_slot": "visible" if slot_v3 else "hidden",
-            "v4_slot": "visible" if slot_v4 else "hidden",
-            "v5_slot": "visible" if v5_tier in ("ok", "warn") else "hidden",
-            "v5_tier": v5_tier,
-            "face_scores": " ".join(f"{f[4]:.2f}" for i in inside for f in persons[i]["faces"] + persons[i]["covered"]),
-            "slot_face_scores": " ".join(f"{f[4]:.2f}" for f in found),
-            "mouth_skin": " ".join(f"{f.skin:.2f}" for i in inside for f in persons[i]["faces"] + persons[i]["covered"]
-                                   ) + ("｜" + " ".join(f"{f.skin:.2f}" for f in found) if found else ""),
-        }
-    return result, persons, faces + extra
-
-
-class AlertState:
-    """一個床位的警示狀態機：連續 on 秒看不到口鼻 → 警示；連續 off 秒看得到 → 解除。
-    防閃爍（context.md §8 第 5 項）：看得到要持續 blip 秒以上，才會把「看不到」的計時歸零
-    ——偶爾冒出一幀假臉，不會讓計時重來。"""
-
-    def __init__(self, on, off, blip):
-        self.on, self.off, self.blip = on, off, blip
-        self.alert, self.since_hidden, self.since_visible = False, None, None
-
-    def update(self, t, hidden):
-        if hidden:
-            self.since_visible = None
-            self.since_hidden = t if self.since_hidden is None else self.since_hidden
-        else:
-            self.since_visible = t if self.since_visible is None else self.since_visible
-            if t - self.since_visible >= self.blip - 1e-6:
-                self.since_hidden = None
-            if t - self.since_visible >= self.off - 1e-6:
-                self.alert = False
-        if self.since_hidden is not None and t - self.since_hidden >= self.on - 1e-6:
-            self.alert = True
-        return self.alert
 
 
 def alert_track(times, hidden, on, off, blip):

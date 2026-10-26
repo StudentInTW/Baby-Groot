@@ -8,9 +8,9 @@ score_relabel.py
   - 評估結果裡如果有 ALERT 的圖不在資料包，也暫時當作 1，並印出提醒（代表要補標）
 
 用法：
-    uv run python score_relabel.py                # 標註檔預設 outputs/relabel_syrip_labels.csv
-    uv run python score_relabel.py 別的標註.csv
-    uv run python score_relabel.py --eval-dir outputs/syrip_eval_gray   # 算灰階／關燈那份（eval_syrip.py --gray/--dim）
+    uv run python -m evaluation.score_relabel                # 標註檔預設 outputs/relabel_syrip_labels.csv
+    uv run python -m evaluation.score_relabel 別的標註.csv
+    uv run python -m evaluation.score_relabel --eval-dir outputs/syrip_eval_gray   # 算灰階／關燈那份（eval_syrip.py --gray/--dim）
 """
 
 import argparse
@@ -18,9 +18,9 @@ import csv
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from eval_syrip import OUT_DIR as EVAL_DIR
+from evaluation.eval_syrip import OUT_DIR as EVAL_DIR
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 KEY = ROOT / "outputs" / "relabel_syrip_key.csv"
 LABELS = ROOT / "outputs" / "relabel_syrip_labels.csv"
 NAMES = {1: "看得到", 2: "部分", 3: "看不到"}

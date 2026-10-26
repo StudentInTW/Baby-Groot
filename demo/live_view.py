@@ -1,17 +1,17 @@
 """
 live_view.py
 筆電即時判讀（給影片「真的在跑」那一段錄螢幕用）：讀一支每床鏡頭的娃娃影片，按影片原速播放，同時即時跑
-v3＋床位判讀（每秒 FPS 幀，eval_video.detect()）和床位情境狀態機（crib_context.CribState：照護中暫停計時、空床灰燈），
+v3＋床位判讀（每秒 FPS 幀，crib_detect.detect()）和床位情境狀態機（crib_state.CribState：照護中暫停計時、空床灰燈），
 用 OpenCV 視窗顯示：左邊鏡頭畫面＋臉框＋燈號外框，右邊燈號與判斷依據，右上角是每幀處理毫秒數、目前判讀 FPS、在什麼硬體上跑。
 
-不是事先算好的：不讀 outputs/ 的任何東西，每一幀都是當下才算（床位特徵也是逐幀算，見 crib_context.EdgeFeatures）。
+不是事先算好的：不讀 outputs/ 的任何東西，每一幀都是當下才算（床位特徵也是逐幀算，見 crib_state.EdgeFeatures）。
 處理不過來時會跳過畫面、維持原速（跟真的裝置一樣），右上角的 FPS 就會掉到 5 以下。
 空床參考照（床位檔的 empty_ref）在開始前先讀一張，等於安裝時拍的空床照。
 VLM 不即時跑（筆電 GPU 在另一個虛擬環境），畫面上不顯示 VLM，所以沒有「請看一眼」的黃燈。
 
 用法：
-    uv run python live_view.py IMG_8432 --start 80                 # 開視窗；q／Esc 結束、空白鍵暫停
-    uv run python live_view.py IMG_8432 --start 80 --end 112 --save outputs/demo/live_IMG_8432.mp4   # 同時把視窗畫面存一份
+    uv run python -m demo.live_view IMG_8432 --start 80                 # 開視窗；q／Esc 結束、空白鍵暫停
+    uv run python -m demo.live_view IMG_8432 --start 80 --end 112 --save outputs/demo/live_IMG_8432.mp4   # 同時把視窗畫面存一份
 錄螢幕：Windows 按 Win+Alt+R（Xbox Game Bar）或用 OBS。
 """
 
@@ -28,14 +28,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-import crib_context
-import demo_render
-import eval_video
-import infant_face_v3
-import infant_face_v5
-import video_labels
-from demo_render import PRODUCT, STATES, font, wrap
-from face_common import FACE_MODEL, FACE_SCORE_TH
+from demo import demo_render
+from demo.demo_render import PRODUCT, STATES, font, wrap
+from evaluation import crib_context, video_labels
+from pipeline import crib_detect, crib_state, infant_face_v3, infant_face_v5
+from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
 
 FPS = crib_context.FPS  # 每秒判讀幾幀（跟 eval_video.py、crib_context.py 一樣）
 TITLE = f"{PRODUCT} · live"
@@ -141,7 +138,7 @@ class Analyzer(threading.Thread):
                     return
                 (t, frame), self.inbox, self.busy = self.inbox, None, True
             tic = time.perf_counter()
-            result, _, faces = eval_video.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots)
+            result, _, faces = crib_detect.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots)
             hidden = result[self.doll]["v3_slot"] == "hidden"
             motion, diff = self.feat.update(frame)
             state = self.ctx.update(t, hidden, motion, diff)
@@ -151,8 +148,8 @@ class Analyzer(threading.Thread):
             self.count += 1
             since = self.ctx.alarm.since_hidden
             row = {"hidden": hidden, "count": t - since if since is not None else 0.0,
-                   "adult": self.ctx.last_motion is not None and t - self.ctx.last_motion < crib_context.CARE_HOLD,
-                   "matches": diff is not None and diff < crib_context.EMPTY_TH}
+                   "adult": self.ctx.last_motion is not None and t - self.ctx.last_motion < crib_state.CARE_HOLD,
+                   "matches": diff is not None and diff < crib_state.EMPTY_TH}
             panel = draw_panel(self.size, self.cam_box, show, row, self.metrics(t), self.args)
             boxes = [tuple(int(v * self.scale) for v in f[:4]) for f in faces]
             with self.cond:
@@ -186,8 +183,8 @@ def main():
 
     cap = cv2.VideoCapture(str(video_labels.find_video(args.video)))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
-    feat = crib_context.EdgeFeatures(slot["rect"], crib_context.read_empty_ref(cap, slot))  # 安裝時拍的空床照
-    ctx = crib_context.CribState()
+    feat = crib_state.EdgeFeatures(slot["rect"], crib_state.read_empty_ref(cap, slot))  # 安裝時拍的空床照
+    ctx = crib_state.CribState()
     cap.set(cv2.CAP_PROP_POS_MSEC, args.start * 1000)
 
     W = args.width // 2 * 2

@@ -12,8 +12,8 @@ Stage I 風險前置實驗 v3 —— 修正 SyRIP 評估找到的兩個問題（
 v2（infant_face_spike.py）保留作對照。
 
 用法：
-    uv run python infant_face_v3.py                        # 跑 dataset/ 裡所有圖片
-    uv run python infant_face_v3.py dataset/infant_1.jpg   # 指定圖片
+    uv run python -m pipeline.infant_face_v3                        # 跑 dataset/ 裡所有圖片
+    uv run python -m pipeline.infant_face_v3 dataset/infant_1.jpg   # 指定圖片
 輸出：outputs/<檔名>_v3.jpg
 """
 
@@ -26,7 +26,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from face_common import (  # 和 v2 共用的門檻、整張圖人臉偵測、配對與畫圖；不依賴 YOLOv8
+from pipeline.face_common import (  # 和 v2 共用的門檻、整張圖人臉偵測、配對與畫圖；不依賴 YOLOv8
     FACE_MODEL, FACE_SCORE_TH, GREEN, KPT_TH, OUT_DIR, RED, ROOT, YELLOW,
     assign_faces, detect_faces, make_person, put_label,
 )
@@ -183,7 +183,7 @@ if __name__ == "__main__":
         str(p) for p in dataset.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}
     ) if dataset.is_dir() else [])
     if not paths:
-        sys.exit("用法：uv run python infant_face_v3.py 圖片1.jpg [圖片2.jpg ...]"
+        sys.exit("用法：uv run python -m pipeline.infant_face_v3 圖片1.jpg [圖片2.jpg ...]"
                  "（dataset/ 不在 GitHub 上，請自己指定圖片）")
     run_pose = load_rtmo()
     detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)

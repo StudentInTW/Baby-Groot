@@ -13,7 +13,7 @@ spike_posture.py —— 實驗（結論：此路不通，保留當紀錄，別�
 → 別做「用關鍵點分仰/趴」的姿態分類器；改強化「臉」這一關（sideface_spike.py，三級 ok/warn/alert）。
 SyRIP 沒有「側躺」類別，側臉問題不能用它驗。
 
-用法：uv run python spike_posture.py [--rtmo]  （--rtmo 改用 RTMO 偵測到的關鍵點做端到端）
+用法：uv run python -m experiments.spike_posture [--rtmo]  （--rtmo 改用 RTMO 偵測到的關鍵點做端到端）
 SyRIP 只能內部評估：數字不進簡報/影片/GitHub。
 """
 import argparse
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 ZIP = ROOT / "dataset" / "SyRIP_Posture.zip"
 CLASSES = ["Supine", "Prone", "Sitting", "Standing"]
 
@@ -179,7 +179,7 @@ def main():
     print(f"validate {len(va)}（{dict(Counter(s['posture'] for s in va))}）")
     if args.rtmo:
         import cv2
-        from infant_face_v3 import load_rtmo
+        from pipeline.infant_face_v3 import load_rtmo
         rp = load_rtmo()
         for split, samples in (("train600", tr), ("validate100", va)):
             z = zipfile.ZipFile(ZIP)

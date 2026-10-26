@@ -14,9 +14,9 @@ sideface_spike.py —— 實驗：把「臉」這一關從兩級（看得到/看
 GT 類別（由 doll_video_labels.csv 的 label＋note 推出）：
   frontal 正臉（ok、note 沒有「側」）｜profile 側臉（ok、note 有「側/頭轉」）｜buried 臉埋住（label=alert）
 
-用法：uv run python sideface_spike.py            # 全部影片
-      uv run python sideface_spike.py IMG_8184   # 只跑一支
-      uv run python sideface_spike.py --fps 2 --low 0.3
+用法：uv run python -m experiments.sideface_spike            # 全部影片
+      uv run python -m experiments.sideface_spike IMG_8184   # 只跑一支
+      uv run python -m experiments.sideface_spike --fps 2 --low 0.3
 輸出：終端統計；不寫檔（純分析）。娃娃是自己拍的，數字可內部參考。
 """
 import argparse
@@ -29,14 +29,14 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 import numpy as np
 
-import infant_face_v3
-from face_common import FACE_MODEL
-from infant_face_v3 import load_rtmo, make_persons
+from pipeline import infant_face_v3
+from pipeline.face_common import FACE_MODEL
+from pipeline.infant_face_v3 import load_rtmo, make_persons
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 VIDEO_DIR = ROOT / "dataset" / "doll_video"
-SLOTS = ROOT / "doll_video_slots.csv"
-LABELS = ROOT / "doll_video_labels.csv"
+SLOTS = ROOT / "labels" / "doll_video_slots.csv"
+LABELS = ROOT / "labels" / "doll_video_labels.csv"
 SLOT_INPUT = 640
 ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 

@@ -14,7 +14,7 @@ YuNet 還是會找到臉（0.77–0.87 分），v3 就判成「臉看得到 → 
 v3（infant_face_v3.py）保留作對照；找人、頭部轉正、合併重複框都沿用 v3。
 
 用法：
-    uv run python infant_face_v4.py 圖片1.jpg [圖片2.jpg ...]
+    uv run python -m pipeline.infant_face_v4 圖片1.jpg [圖片2.jpg ...]
 輸出：outputs/<檔名>_v4.jpg（橘框＝找到臉但口鼻被蓋住）
 """
 
@@ -28,10 +28,10 @@ import cv2
 import numpy as np
 
 # 門檻用「模組.常數」在呼叫時讀取（不用 from import），eval_doll.py 的 --face-th 等參數才改得到
-import face_common as fc
-import infant_face_v3 as v3
-from face_common import FACE_MODEL, GREEN, OUT_DIR, RED, YELLOW, assign_faces, put_label
-from infant_face_v3 import load_rtmo, make_persons, up_angle
+from pipeline import face_common as fc
+from pipeline import infant_face_v3 as v3
+from pipeline.face_common import FACE_MODEL, GREEN, OUT_DIR, RED, YELLOW, assign_faces, put_label
+from pipeline.infant_face_v3 import load_rtmo, make_persons, up_angle
 
 ORANGE = (0, 140, 255)
 EYE_PX = 64           # 口鼻檢查時把臉轉正、縮放成雙眼距離這麼多像素
@@ -201,7 +201,7 @@ def analyze(run_pose, detector, image_path):
 if __name__ == "__main__":
     paths = sys.argv[1:]
     if not paths:
-        sys.exit("用法：uv run python infant_face_v4.py 圖片1.jpg [圖片2.jpg ...]")
+        sys.exit("用法：uv run python -m pipeline.infant_face_v4 圖片1.jpg [圖片2.jpg ...]")
     run_pose = load_rtmo()
     detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), fc.FACE_SCORE_TH)
     for path in paths:

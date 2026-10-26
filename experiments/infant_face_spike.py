@@ -17,8 +17,8 @@ v2 的分工：
 需要 YOLOv8（AGPL，選配）：先執行 `uv sync --group yolo`。v3（infant_face_v3.py）不需要。
 
 用法：
-    uv run python infant_face_spike.py                        # 跑 dataset/ 裡所有圖片
-    uv run python infant_face_spike.py dataset/infant_1.jpg   # 指定圖片
+    uv run python -m experiments.infant_face_spike                        # 跑 dataset/ 裡所有圖片
+    uv run python -m experiments.infant_face_spike dataset/infant_1.jpg   # 指定圖片
 輸出：outputs/<檔名>_face.jpg
 """
 
@@ -31,7 +31,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設�
 import cv2
 from ultralytics import YOLO
 
-from face_common import (  # 門檻、找臉、配對與畫圖都和 v3 共用
+from pipeline.face_common import (  # 門檻、找臉、配對與畫圖都和 v3 共用
     FACE_MODEL, FACE_SCORE_TH, GRAY, GREEN, OUT_DIR, RED, ROOT, YELLOW,
     assign_faces, detect_faces, make_person, put_label,
 )

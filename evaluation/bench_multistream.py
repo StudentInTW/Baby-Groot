@@ -18,8 +18,8 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
 測試幀取自自己拍的娃娃影片 IMG_8115（橫式 1080p、單一娃娃俯拍，最接近每床鏡頭），縮到 --res 指定的高度。
 
 用法：
-    uv run python bench_multistream.py                         # 720p、1080p 都跑，W = 1 2 4 8 12 16
-    uv run python bench_multistream.py --res 720 --workers 1 8 --sec 10   # 試跑
+    uv run python -m evaluation.bench_multistream                         # 720p、1080p 都跑，W = 1 2 4 8 12 16
+    uv run python -m evaluation.bench_multistream --res 720 --workers 1 8 --sec 10   # 試跑
 輸出：outputs/bench/cpu_multistream.csv（每種設定一列）、終端機摘要
 """
 
@@ -37,7 +37,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 VIDEO = ROOT / "dataset" / "doll_video" / "IMG_8115.MOV"
 OUT_DIR = ROOT / "outputs" / "bench"
 N_FRAMES = 40          # 從影片平均取這麼多幀，輪流餵給模型
@@ -73,8 +73,8 @@ def load_frames(height):
 
 
 def load_models():
-    from face_common import FACE_MODEL, FACE_SCORE_TH
-    from infant_face_v3 import load_rtmo
+    from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
+    from pipeline.infant_face_v3 import load_rtmo
     run_pose = load_rtmo()
     detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
     return run_pose, detector
@@ -82,9 +82,9 @@ def load_models():
 
 def process(run_pose, detector, frame, mode, timing=None):
     """處理一幀，回傳這個床位「看不到口鼻」與否。timing 給 dict 就記錄各步驟秒數。"""
-    from eval_video import slot_faces
-    from face_common import assign_faces, detect_faces
-    from infant_face_v3 import head_faces, make_persons
+    from pipeline.crib_detect import slot_faces
+    from pipeline.face_common import assign_faces, detect_faces
+    from pipeline.infant_face_v3 import head_faces, make_persons
 
     def tick(name, t0):
         if timing is not None:

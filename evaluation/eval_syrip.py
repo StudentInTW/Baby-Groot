@@ -20,12 +20,12 @@ SyRIP 的真實圖來自 Google Images／YouTube，只能內部評估：
 outputs/syrip_eval/ 裡的東西不可放進簡報、影片或 GitHub，簡報只能引用數字。
 
 用法：
-    uv run python eval_syrip.py                       # 人臉判斷 v2、三個模型
-    uv run python eval_syrip.py --face v3             # 人臉判斷 v3（輸出檔名加 _v3）
-    uv run python eval_syrip.py --face v4 --models rtmo  # 人臉判斷 v4，只跑 RTMO（輸出 rtmo_v4.csv）
-    uv run python eval_syrip.py --limit 10            # 先跑 10 張試試
-    uv run python eval_syrip.py --models yolov8 rtmo  # 只跑指定模型
-    uv run python eval_syrip.py --face v3 --models rtmo --gray --dim 0.3
+    uv run python -m evaluation.eval_syrip                       # 人臉判斷 v2、三個模型
+    uv run python -m evaluation.eval_syrip --face v3             # 人臉判斷 v3（輸出檔名加 _v3）
+    uv run python -m evaluation.eval_syrip --face v4 --models rtmo  # 人臉判斷 v4，只跑 RTMO（輸出 rtmo_v4.csv）
+    uv run python -m evaluation.eval_syrip --limit 10            # 先跑 10 張試試
+    uv run python -m evaluation.eval_syrip --models yolov8 rtmo  # 只跑指定模型
+    uv run python -m evaluation.eval_syrip --face v3 --models rtmo --gray --dim 0.3
         # 模擬補光不夠的 IR 夜視（灰階＋關燈，見 degrade.py）：輸出到 outputs/syrip_eval_gray_dim0.3/，
         # 不會蓋掉原圖的結果；重算誤報用 score_relabel.py --eval-dir outputs/syrip_eval_gray_dim0.3
 """
@@ -44,15 +44,15 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from face_common import (  # v2 的人臉偵測、配對規則與門檻
+from pipeline.face_common import (  # v2 的人臉偵測、配對規則與門檻
     FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
 )
-import infant_face_v5
-from degrade import degrade, describe, tag
-from infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
-from infant_face_v4 import detect_faces_v4, drop_covered_faces
+from pipeline import infant_face_v5
+from evaluation.degrade import degrade, describe, tag
+from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
+from pipeline.infant_face_v4 import detect_faces_v4, drop_covered_faces
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 SYRIP_ZIP = ROOT / "dataset" / "SyRIP_Posture.zip"
 OUT_DIR = ROOT / "outputs" / "syrip_eval"
 DET_TH = 0.3          # YOLOv8、YOLOX 的找人門檻（RTMO 用 infant_face_v3.DET_TH，同為 0.3）
@@ -93,7 +93,7 @@ def load_models(names):
             from ultralytics import YOLO
         except ImportError:
             raise SystemExit("要比較 YOLOv8，請先執行 uv sync --group yolo（會多裝 PyTorch）")
-        from infant_face_spike import POSE_MODEL
+        from experiments.infant_face_spike import POSE_MODEL
         yolo = YOLO(str(POSE_MODEL))
 
         def run_yolo(img):
