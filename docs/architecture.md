@@ -96,6 +96,7 @@
 
 - **姿態：RTMO-m（Apache-2.0）**——偵測率最高、一次處理全畫面。備案 RTMPose-m＋YOLOX-m。YOLOv8 出局（AGPL，跟得獎作品要無條件商用＋再授權不相容）。
   **最終以 Hailo-10H 能不能編譯為準**（RTMO 的 ONNX 把解碼包在裡面、輸出人數動態，可能較難轉）。
+  10/26 現況：YuNet 已編譯成 HEF，RTMO 還沒試（[`hailo/結果.md`](../hailo/結果.md)）。
 - **人臉：YuNet**（MIT）。
 - **VLM：Qwen2-VL-2B-Instruct**（Apache-2.0），Hailo 有 10H 版本。
 - 不用 MediaPipe Pose（靠臉找人、假設頭看得到，又為單人設計）。

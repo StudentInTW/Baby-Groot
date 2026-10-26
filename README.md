@@ -17,8 +17,13 @@ device, and it makes no claims about SIDS.
   7/40 false alerts; two new per-crib clips: 3/7 caught, 0/7 false alerts, the misses include an ear taken for a face;
   laptop CPU handles about 8 cribs at 1 FPS; the VLM separated safe from dangerous head crops with AUC 0.98 on clips it
   had never seen. Details: [`docs/architecture.md`](./docs/architecture.md), [`docs/影片測試結果.md`](./docs/影片測試結果.md).
+- **Hardware status**: the YuNet face model already compiles to a Hailo-10H HEF (Dataflow Compiler 5.4.0), and the quantized model matches
+  ONNX in the emulator (same faces found on 11 test images, scores within 0.02); the pose model
+  (RTMO-m, or YOLOX-m + RTMPose-m as a fallback) is next. Nothing has been measured on the chip yet: the UGen300 ships
+  when finalists are announced (11/02). See [`hailo/結果.md`](./hailo/結果.md).
 - **Run it**: `uv sync`, then `uv run python infant_face_v3.py your_image.jpg`. Evaluation scripts are listed below.
   The datasets and videos are not in the repo (licensing and privacy); doll images are our own.
+  Third-party licenses: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
 
 ---
 
@@ -26,7 +31,7 @@ device, and it makes no claims about SIDS.
 判讀這些鏡頭：寶寶臉朝下、口鼻被被子或包巾蓋住，連續 3 秒看不到口鼻，就先安靜通知護理師——**讓護理師比家長先知道**。
 AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器材，不宣稱預防 SIDS。
 
-參賽賽道：Battlefield Lightning。Stage I 截止 **2026/10/14 17:00**（英文簡報＋≤3 分鐘英文影片，用筆電做，不需硬體）。
+參賽賽道：Battlefield Lightning。Stage I 提案截止 **2026/10/28**（英文簡報＋≤3 分鐘英文影片，用筆電做，不需硬體）；11/02 公布入圍、寄 UGen300。
 
 > **2026/10/8 方向轉向**：原題目是「托嬰中心午睡安全監看」（一台裝置看整間午睡室）。訪談與參訪發現托嬰中心的監視器裝在高處、
 > 物理上看不到臉，孩子也多半已經 7–8 個月大；月子中心的每床鏡頭從正上方拍新生兒，正好看得到臉。程式不受影響：
@@ -43,6 +48,7 @@ AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器�
 ```
 .
 ├── README.md
+├── THIRD_PARTY_NOTICES.md       # 第三方授權（repo 裡的 YuNet 要附 MIT 聲明）
 ├── pyproject.toml / uv.lock     # uv 專案設定與鎖定的依賴
 ├── infant_face_v3.py            # 主力：RTMO 找人 → 頭部轉正 → YuNet 找臉 → 每個寶寶口鼻看不看得到（真實嬰兒基準）
 ├── infant_face_v4.py            # 實驗：v3＋口鼻膚色檢查（擋「只露眼睛」的假臉）
@@ -66,6 +72,7 @@ AI 判讀在本地、不另存影像；定位是輔助觀察，不是醫療器�
 ├── bench_multistream.py         # CPU 多路負載測試：一台主機能同時判讀幾支每床鏡頭
 ├── degrade.py                   # 模擬暗光／IR 夜視（灰階、關燈）
 ├── sideface_spike.py / spike_posture.py     # 早期 spike：側臉幾何、關鍵點判睡姿（結論見 docs）
+├── hailo/結果.md                # HEF 轉換結果（YuNet 已編譯；.hef 不進 repo）
 ├── model/face_detection_yunet_2023mar.onnx  # 人臉偵測（OpenCV YuNet，MIT）；其他權重第一次執行時自動下載
 ├── docs/
 │   ├── 任務_示範素材.md         # 影片示範素材的任務說明（開場雙畫面、介面原型、即時判讀）
@@ -186,7 +193,7 @@ uv run python live_view.py IMG_8432 --start 80     # q／Esc 結束、空白鍵�
 
 三支評估都能加 `--gray`（去掉顏色）和 `--dim 0.3`（亮度 ×0.3 加雜訊），結果另外放、不蓋掉原圖基準。這只是近似，要驗證還是得用夜視攝影機實拍。
 
-## 現在進度（2026/10/10）
+## 現在進度（2026/10/26）
 
 - **真實嬰兒基準是 v3**：SyRIP 700 張（人工重標）偵測率 97.7%、口鼻看得到時誤報 6.1%、口鼻看不到時 98.6% 會警示。SyRIP 是清醒的居家照片，不是嬰兒室。
 - **娃娃擺拍**（114 張、185 隻）：臉朝下趴睡 25/25 會警示、誤報 4.4%；床位模式把警示召回從 62% 拉到 90%。
@@ -195,10 +202,11 @@ uv run python live_view.py IMG_8432 --start 80     # q／Esc 結束、空白鍵�
 - **床位情境（原型）**：兩段空床結束時都是灰燈（原本一直響）、沒有危險片段被判成空床、沒有新增誤報。
 - **運算量**：筆電 CPU（i7-11800H）完整流程每床 1 FPS 可同時判讀約 8 床，其中 7–8 成運算是姿態模型（要搬上 UGen300 的部分）。
 - **VLM 第二道檢查**（筆電 GPU）：在沒看過的兩支影片上分辨安全／危險的頭部畫面 AUC 0.98；偵測器漏掉的 13 幀全部補到，安全畫面多 9 次提醒；判不出趴睡。只能加「請看一眼」，不能取消警示。
-- **還沒有**：真實嬰兒室畫面、新生兒影片、實機（晶片 10/26 入圍後才寄到）。真實場域測試要等 IRB 核准（Stage II）。
+- **HEF 轉換**：YuNet 已編譯成 Hailo-10H HEF（DFC 5.4.0），量化後模擬器跟 ONNX 幾乎一樣；姿態模型（RTMO-m 或備案 YOLOX-m＋RTMPose-m）還沒試。見 [`hailo/結果.md`](./hailo/結果.md)。
+- **還沒有**：真實嬰兒室畫面、新生兒影片、實機（晶片 11/02 公布入圍後才寄到）。真實場域測試要等 IRB 核准（Stage II）。
 
 細節見 [`docs/architecture.md`](./docs/architecture.md)、[`docs/影片測試結果.md`](./docs/影片測試結果.md)。
 
 ## 範圍護欄（Stage I 不要做）
 
-晶片 10/26 才到，任何「跑在 UGen300 實機上」的事（部署、量化、實機效能）**全部等入圍**；Stage I 只在筆電上做概念驗證，唯一例外是 HEF 轉換可行性測試（不需要晶片）。Stage I 不訓練模型。交付物是**英文**。
+晶片 11/02 公布入圍後才到，任何「跑在 UGen300 實機上」的事（部署、量化、實機效能）**全部等入圍**；Stage I 只在筆電上做概念驗證，唯一例外是 HEF 轉換可行性測試（不需要晶片）。Stage I 不訓練模型。交付物是**英文**。
