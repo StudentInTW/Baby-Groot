@@ -1,10 +1,12 @@
-# Baby Groot · per-crib airway watch for postpartum nurseries
+# FirstGlance · per-crib airway watch for postpartum nurseries
 
 **ASUS UGen AI League 2026 · Battlefield Lightning · Team Baby Groot** · 中文技術說明見 [`docs/architecture.md`](./docs/architecture.md)
 
+![FirstGlance: nurses know first. One edge box reads every crib camera in a postpartum nursery and silently alerts the nurse.](./docs/images/cover.jpg)
+
 Many postpartum care centres in Taiwan already film every crib in the nursery from above and stream it to parents.
-Nobody watches those streams continuously: on a night shift one carer looks after several newborns. Our edge box
-(ASUS UGen300 / Hailo-10H) reads the existing per-crib cameras and, when a baby's nose and mouth stay out of sight for
+Nobody watches those streams continuously: on a night shift one carer looks after several newborns. FirstGlance, our edge box
+(ASUS UGen300 / Hailo-10H), reads the existing per-crib cameras and, when a baby's nose and mouth stay out of sight for
 3 seconds (face-down, or covered by a blanket or swaddle), quietly tells the nurse first.
 
 It is an observation aid, not a medical device. It does not monitor breathing or vital signs and makes no claims about
