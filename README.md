@@ -18,7 +18,7 @@ SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges l
 | --- | --- |
 | Per-crib pipeline: pose → face → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
 | Caregiving pause, empty-crib gray state | Prototype, tested on two per-crib doll clips |
-| VLM second check (Qwen2-VL-2B) | Laptop GPU experiment; moves to the Hailo-10H in Stage II |
+| VLM second check (Qwen2-VL-2B) | Works as a laptop GPU experiment. Hailo's precompiled HEF also runs on the UGen300 (about 1 s per question, in the same process as the pipeline), but there it calls every side face "not visible", so it is **not usable on the chip yet** (see Hardware integration) |
 | Pose model (RTMO-m) on the Hailo-10H | **Runs on the UGen300 inside the pipeline.** Plain 8-bit quantization lost too much accuracy, so we retrained the network to tolerate 8-bit (quantization-aware training). On all three test sets the results match the original float model on the CPU |
 | YuNet face model on the Hailo-10H | **Runs on the UGen300 inside the pipeline** (set `FG_YUNET_HEF`). Its scores differ from OpenCV's by about 0.02, so a few faces near the threshold flip (slightly more false alerts than on the CPU). With YuNet on the chip the USB link drops now and then; with one thread it recovers by itself in 1–3 s (see Hardware integration) |
 | On-chip speed and power | Whole pipeline at 720p on a laptop host: about 30 frames per second in total with RTMO-m on the chip and YuNet on the CPU (CPU at 99%), 15 with both on the chip (CPU at 35%), 8 on the CPU alone, i.e. that many cribs at 1 frame per second each (stream decoding not included). Power: the UGen300 does not report it; to be measured with a USB-C meter |
@@ -56,7 +56,8 @@ Each step and where it lives in the code:
    reference photo. Motion never clears an alert that is already sounding. `pipeline/crib_state.py`
 5. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
    the baby's nose and mouth?". It can raise a yellow "please look", or rank red alerts, but never cancel one: its answer
-   flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`
+   flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`. A small classifier trained on our own doll
+   footage, reading the same rotated head crop YuNet sees, is the alternative we are testing: `experiments/airway_train.py`
 
 **Key design choice:** a face detector decides whether the face is visible, not the pose model's keypoint confidence.
 Keypoint confidence is trained on "was this point annotated", not "can it be seen": a baby with its face in the sheet
@@ -67,7 +68,7 @@ whether the face can be seen.
 
 | Runs on | What |
 | --- | --- |
-| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m and YuNet, both running in the pipeline; in Stage II also the Qwen2-VL-2B second check |
+| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m and YuNet, both running in the pipeline; the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
 | Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), per-crib state machines, event log |
 
 - **HEF compilation** ([`hailo/結果.md`](./hailo/結果.md), plan in [`hailo/轉換計畫.md`](./hailo/轉換計畫.md)):
@@ -141,7 +142,22 @@ whether the face can be seen.
   the other threads first recovered 2 times out of 3. A reliable fix is to run the chip in a separate process and
   restart that process on a disconnect. The cause of the restarts is not known yet (USB power or firmware). Those
   seconds are not judged, which is what the planned per-crib "offline" state must show.
-- **Why the 10H:** its 8 GB of memory lets a 2B vision-language model sit on the same USB accelerator as the detectors.
+- **VLM on the UGen300** (`hailo/vlm_hef.py`): Hailo's GenAI Model Zoo ships Qwen2-VL-2B-Instruct already compiled for
+  the Hailo-10H (HEF for HailoRT 5.4.0, 3.26 GB), and pyHailoRT for Windows includes the VLM API. On the chip it loads in
+  20 s and answers a yes/no question in 1.03 s (first token; 7 tokens/s after that), as in Hailo's published table.
+  Three limits we hit: the input is fixed at 336×336 (our laptop experiment used 448); the API returns text only, so
+  the tuned probability threshold cannot be used and the answer is a greedy yes/no; and while it runs pyHailoRT holds
+  the GIL, while on Windows over USB a second process cannot open the device, so each question pauses the pipeline in
+  the same process for about 1 s. On the two held-out per-crib doll clips it answered "No" to "Can you see the baby's
+  nose and mouth?" on 272 of 273 asks when shown the head end of the crib, clear front faces included. Showing it the
+  same rotated head crop YuNet sees (`experiments/vlm_spike.py --prep-head`, `--crop head`) fixes front faces, but it
+  still calls every side face "not visible": it would catch all 13 frames the detector missed at the cost of asking for
+  a look on 26 of 38 safe frames (the laptop version, with its tuned threshold, asks on 9). Next: a wording that counts
+  side faces as visible (chosen on other clips), Qwen3-VL-2B (512×288 input, 16-bit activations), or a small trained
+  classifier instead. Asking once every 5 s cost about 17% throughput with one crib and nothing measurable with 4–8;
+  asking back to back stalls the pipeline completely, so the VLM can only be asked about the cribs in doubt.
+- **Why the 10H:** its 8 GB of memory lets a 2B vision-language model sit on the same USB accelerator as the detectors
+  (measured: Qwen2-VL-2B loads and runs next to RTMO-m; its accuracy is the open problem, see above).
   USB is enough bandwidth for small crops at 1 frame per second per crib, and it plugs into an ordinary PC.
 - **CPU baseline** (`evaluation/bench_multistream.py`, Intel i7-11800H): the full pipeline takes about 170–190 ms per frame,
   so one laptop handles about 8 cribs at 1 FPS. 70–80% of that is the pose model, which is the part we moved to the NPU.
@@ -160,6 +176,8 @@ These are proxies: real infant photos taken at home, dolls, and simulations. The
 | Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
 | Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts |
 | VLM second check (laptop GPU, 2 unseen clips) | Safe vs dangerous head crops AUC 0.98; found all 13 frames the detector missed, at the cost of 9 extra look requests on safe frames |
+| VLM second check on the UGen300 (same 2 clips) | Not usable yet: input fixed at 336×336 and no probabilities. On head crops it still finds all 13 missed frames but would ask for a look on 26 of 38 safe frames (all 21 side faces) |
+| Mouth/nose classifier (experiment; trained on one half of our doll footage, scored once on the other half) | Hidden airway 189/194 correct, visible 601/892 (AUC 0.965). As a second check it flags 64/67 frames the detector missed; on the per-crib clip it asks for 10 extra looks on 228 safe frames, but it calls every side-lying side face "not visible" (0/246 in one clip), because the training half has too few of them. On the VLM's 40 test frames: 3/24 extra looks (laptop VLM 5/24, chip VLM 16/24) |
 | Simulated night (grayscale, software only) | Real infant false alerts rise from 6.1% to 18.3%; not a substitute for real IR footage |
 
 Details, failure cases and the experimental v4/v5 variants: [`docs/architecture.md`](./docs/architecture.md),
@@ -239,11 +257,20 @@ uv run --with onnx python hailo/compare_rtmo.py --hef model/rtmo_D1.hef --data r
 uv run python -m hailo.compare_yunet_chip model/yunet_A.hef       # YuNet on the chip vs OpenCV, same inputs
 uv run python -m hailo.stress_chip model/rtmo_D1.hef model/yunet_A.hef --sec 180   # USB disconnect stress test
 FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef uv run python -m evaluation.bench_multistream --threads --res 720 --workers 1 2 4 8 16
+# VLM (Qwen2-VL-2B HEF from Hailo's GenAI Model Zoo, see below)
+uv run python -m hailo.vlm_hef model/genai/Qwen2-VL-2B-Instruct.hef   # smoke test: load time, input, seconds per question
+uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --chip model/genai/Qwen2-VL-2B-Instruct.hef   # second check on the chip
+uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --prep-head   # save RTMO head crops, then add --crop head to the runs
+FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --modes full --res 720 --workers 1 4 8 --vlm model/genai/Qwen2-VL-2B-Instruct.hef --vlm-every 5
 ```
 
 In PowerShell set the variables first, e.g. `$env:FG_RTMO_HEF = "model/rtmo_D1.hef"; $env:FG_YUNET_HEF = "model/yunet_A.hef"`.
 Every evaluation and demo script accepts them. `bench_multistream --threads` runs the cribs as threads of one
 process that share the UGen300 (one VDevice; HailoRT's scheduler takes turns between the two models).
+The Qwen2-VL HEF is not compiled by us: download it from
+[Hailo's GenAI Model Zoo](https://github.com/hailo-ai/hailo_model_zoo_genai/blob/v5.4.0/docs/MODELS.rst) (the v5.4.0
+build, matching HailoRT 5.4.0) into `model/genai/`. With `--vlm`, a thread of the same process asks the VLM while the
+cribs run (a second process cannot open the USB device on Windows).
 
 ### VLM second check (experiment, NVIDIA GPU)
 
@@ -252,7 +279,20 @@ uv venv .venv-vlm --python 3.12
 uv pip install --python .venv-vlm torch torchvision --index-url https://download.pytorch.org/whl/cu126
 uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-python pillow
 .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432   # run eval_video first
+.venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432 --size 336   # same 336×336 input as the chip
+.venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432 --crop head   # head crops (run --prep-head in .venv first)
 ```
+
+### Mouth/nose classifier (experiment, PyTorch in the same `.venv-vlm`)
+
+```bash
+uv run python -m experiments.airway_crops              # RTMO head crops from our doll photos and videos (run eval_video first)
+.venv-vlm/Scripts/python -m experiments.airway_train   # train on the calibration half, score once on the held-out half
+```
+
+Both halves follow `hailo/prep_calib.py` (`SPLITS`, split by whole video and photo batch). Only the first half is ever
+used for training; the threshold stays at 0.5 and is not tuned on the held-out half. The first run downloads
+torchvision's ImageNet-pretrained ResNet18 weights.
 
 ## Repository layout
 
@@ -266,9 +306,10 @@ pipeline/       the per-crib pipeline (the part that runs on the edge box)
   crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib
 evaluation/     evaluation scripts and their helpers (label loading, simulated night view)
 demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
-experiments/    earlier versions (v1, v2) and exploratory spikes, kept for comparison
+experiments/    earlier versions (v1, v2) and exploratory spikes kept for comparison, including the VLM second check
+                (vlm_spike.py) and the mouth/nose classifier (airway_crops.py, airway_train.py)
 hailo/          HEF conversion (calibration, compile, quantization-aware training, emulator and on-chip comparison,
-                host-side decoders, HailoRT runner, USB stress test), plan and results
+                host-side decoders, HailoRT runner, VLM runner, USB stress test), plan and results
 labels/         our annotations: doll photos, crib areas and timelines for the doll videos
 model/          YuNet face detector (MIT); other weights download on first run
 docs/           technical write-up and test reports (Chinese)
@@ -285,8 +326,10 @@ docs/           technical write-up and test reports (Chinese)
 ## Known limitations
 
 - No real newborns or real nursery footage yet; every number above comes from a proxy.
-- When the head turns away, YuNet can take an ear for a face, so a hidden airway stays green. The Stage II VLM check flags
-  these frames (13/13 on the doll clips).
+- When the head turns away, YuNet can take an ear for a face, so a hidden airway stays green. The VLM check flags
+  these frames on the laptop GPU (13/13 on the doll clips), but on the UGen300 it is not accurate enough yet. The
+  trained mouth/nose classifier flags 64 of 67 such frames, but until we film more side faces for its training half it
+  also flags babies lying on their side with the face visible.
 - A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
 - Night (IR) footage is only simulated, and grayscale raises false alerts.
 - With YuNet on the UGen300 the USB link drops every few minutes under load. Recovery works with one thread but can

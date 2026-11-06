@@ -25,7 +25,12 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
     uv run python -m evaluation.bench_multistream --res 720 --workers 1 8 --sec 10   # 試跑
     FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef \
         uv run python -m evaluation.bench_multistream --threads --modes full --workers 1 2 4 8
-輸出：outputs/bench/cpu_multistream.csv（換了模型時是 multistream_<代號>.csv；每種設定一列）、終端機摘要
+    FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --modes full \
+        --res 720 --workers 1 4 8 --vlm model/genai/Qwen2-VL-2B-Instruct.hef [--vlm-every 5]
+        # 同時另一條執行緒問晶片上的 VLM（hailo/vlm_hef.py 的 Background；不停地問，或每題隔幾秒），
+        # 量主流程會慢多少、VLM 每題多久。VLM 只能跟主流程同一個程序（Windows＋USB 第二個程序開不了裝置）
+輸出：outputs/bench/cpu_multistream.csv（換了模型時是 multistream_<代號>.csv，加 --vlm 時再接 _vlm 或 _vlm<秒>s；
+      每種設定一列）、終端機摘要
 """
 
 import argparse
@@ -218,7 +223,12 @@ def main():
     ap.add_argument("--repeat", type=int, default=2, help="延遲測試把測試幀跑幾輪（預設 2）")
     ap.add_argument("--threads", action="store_true",
                     help="用一個程序裡的多條執行緒代替多個程序（模型放 UGen300 上時用）")
+    ap.add_argument("--vlm", metavar="HEF",
+                    help="同時另一條執行緒問 UGen300 上的 VLM（Qwen2-VL HEF），量兩邊各多慢；要配 --threads")
+    ap.add_argument("--vlm-every", type=float, default=0, help="VLM 每題之間隔幾秒（預設 0＝不停地問）")
     args = ap.parse_args()
+    if args.vlm and not args.threads:
+        raise SystemExit("--vlm 要配 --threads（主流程的模型要在晶片上，才是在量共用晶片）")
 
     import psutil
     from pipeline.infant_face_v3 import rtmo_tag
@@ -226,6 +236,16 @@ def main():
           + (f"｜模型：{rtmo_tag()}" if rtmo_tag() else ""))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     models = load_models() if args.threads else None   # 執行緒模式只載一次（晶片上的模型不要重複開）
+    vlm = None
+    if args.vlm:
+        from experiments.vlm_spike import QUESTIONS
+        from hailo.vlm_hef import Background, square
+        rgb = cv2.cvtColor(square(load_frames(720)[0], 336), cv2.COLOR_BGR2RGB)
+        t0 = time.perf_counter()
+        vlm = Background(args.vlm, rgb, QUESTIONS["mouth"], args.vlm_every)
+        print(f"VLM 載好了（{time.perf_counter() - t0:.0f} 秒）。量吞吐量的時候另一條執行緒"
+              + (f"每題隔 {args.vlm_every:g} 秒問口鼻題" if args.vlm_every else "不停地問口鼻題")
+              + "（延遲、解碼不受影響）", flush=True)
     unit = "條執行緒" if args.threads else "個程序"
     rows = []
     for height in args.res:
@@ -238,19 +258,30 @@ def main():
             steps = "、".join(f"{k} {v:.0f}" for k, v in ms.items() if k not in ("total", "total_p95"))
             print(f"  [{mode}] 單程序每幀 {ms['total']:.0f} ms（p95 {ms['total_p95']:.0f}）：{steps} ms")
             for w in args.workers:
+                if vlm:
+                    vlm.start()
+                t0 = time.time()
                 if args.threads:
                     fps, cpu = throughput_threads(models[0], frames, mode, w, args.sec)
                 else:
                     fps, cpu = throughput(height, mode, w, args.sec)
+                extra = {}
+                if vlm:
+                    t1 = time.time()
+                    vlm.pause()
+                    q_rate, q_sec, n_q = vlm.window(t0, t1)
+                    extra = {"vlm_q_per_sec": round(q_rate, 3), "vlm_sec_per_q": round(q_sec, 3)}
                 print(f"  [{mode}] {w:>2} {unit} → 共 {fps:5.1f} 幀/秒（CPU {cpu:3.0f}%）"
-                      f"＝每路 1 FPS 撐 {int(fps)} 路、2 FPS 撐 {int(fps / 2)} 路")
+                      f"＝每路 1 FPS 撐 {int(fps)} 路、2 FPS 撐 {int(fps / 2)} 路"
+                      + (f"｜同時 VLM 每題 {q_sec:.2f} 秒（{n_q} 題）" if vlm else ""))
                 rows.append({"height": height, "mode": mode, "workers": w, "fps_total": round(fps, 2),
                              "cpu_percent": round(cpu), "latency_ms": round(ms["total"]),
                              "latency_p95_ms": round(ms["total_p95"]), "decode_fps": round(dec),
-                             "decode_cpu_percent": round(dec_cpu), "codec": codec,
+                             "decode_cpu_percent": round(dec_cpu), "codec": codec, **extra,
                              **{f"{k}_ms": round(v, 1) for k, v in ms.items() if k not in ("total", "total_p95")}})
     keys = sorted({k for r in rows for k in r}, key=lambda k: list(rows[0]).index(k) if k in rows[0] else 99)
-    out = OUT_DIR / (f"multistream_{rtmo_tag()}.csv" if rtmo_tag() else "cpu_multistream.csv")
+    vlm_tag = (f"_vlm{args.vlm_every:g}s" if args.vlm_every else "_vlm") if vlm else ""
+    out = OUT_DIR / ((f"multistream_{rtmo_tag()}" if rtmo_tag() else "cpu_multistream") + vlm_tag + ".csv")
     with open(out, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=keys)
         writer.writeheader()

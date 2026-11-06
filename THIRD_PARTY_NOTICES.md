@@ -43,6 +43,7 @@ SOFTWARE.
 | ONNX Runtime | Inference backend for rtmlib | MIT |
 | Pillow | Image handling | MIT-CMU |
 | Qwen2-VL-2B-Instruct | Experimental VLM second check (`experiments/vlm_spike.py`, separate environment) | Apache-2.0 |
+| PyTorch, torchvision and torchvision's ImageNet-pretrained ResNet18 weights | Experimental mouth/nose classifier (`experiments/airway_train.py`, separate environment); not part of the pipeline | PyTorch and torchvision: BSD-3-Clause. The weights have no separate licence; torchvision notes that pretrained weights may be subject to the terms of their training data (ImageNet allows non-commercial use only). Whether a model fine-tuned from them can ship is still open |
 | Ultralytics YOLOv8 (optional `yolo` dependency group) | Only the early v1/v2 scripts and the YOLOv8 comparison in `evaluation/eval_syrip.py`; not part of the v3 pipeline | AGPL-3.0 |
 
 Compiled Hailo files (`.hef`, `.har`) are not included; see [`hailo/結果.md`](hailo/結果.md).

@@ -24,7 +24,20 @@ VLM 複判 spike（2026/10/9，實驗，還沒進主流程）——兩個問題�
     .venv-vlm/Scripts/python -m experiments.vlm_spike --reuse        # 不重跑 VLM，用上次的 frames.csv 重算摘要
     .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432   # 只跑指定影片（驗證門檻用），存成 frames_<影片>.csv
     .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8432 --every 1  # 整支影片每 1 秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv
-輸出：outputs/vlm_spike/frames.csv（每幀的機率）、crops/（餵給 VLM 的裁切圖，方便人工檢查）、終端機摘要
+    .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432 --size 336   # 筆電版、但輸入跟晶片一樣是 336×336
+    uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --chip model/genai/Qwen2-VL-2B-Instruct.hef
+                                                          # 晶片版（hailo/vlm_hef.py；主環境 .venv，不用 PyTorch）
+    uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --prep-head            # 先存頭部特寫（主環境，要 RTMO）
+    .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432 --size 336 --crop head   # 再讓 VLM 看頭部特寫
+    uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --chip model/genai/Qwen2-VL-2B-Instruct.hef --crop head
+輸出：outputs/vlm_spike/frames.csv（每幀的機率）、crops/（餵給 VLM 的裁切圖，方便人工檢查）、終端機摘要；
+      --size、--chip、--crop head 的結果另存 frames…_336.csv／frames…_chip.csv／frames…_336_head.csv…、
+      crops_336/／crops_chip/…，不蓋掉原本的
+晶片版的 API 不給機率：每題只生 1 個字（greedy），Yes＝1、No＝0，三個版本平均就是多數決，大約等於筆電版的門檻 0.5。
+--crop head（11/06）：晶片的輸入固定 336×336，整個床頭範圍縮下來臉太小，改看 RTMO 找到的頭——跟主流程給 YuNet 的
+頭部特寫一樣（infant_face_v3.head_faces：頭中心、邊長＝人框長邊 × 0.6、依身體方向轉正），直接輸出 size×size。
+RTMO 在主環境跑，所以先用 --prep-head 存成 head_crops/<幀>.png（找不到人的幀退回床頭裁切，head_crops.csv 記哪一種），
+筆電版和晶片版都讀同一批圖。
 """
 
 import argparse
@@ -127,6 +140,80 @@ def load_vlm(cpu):
     return ask
 
 
+def load_vlm_chip(hef, size):
+    """晶片版（hailo/vlm_hef.py）：回傳的「機率」只有 1（Yes）、0（No）、0.5（其他）。"""
+    from hailo.vlm_hef import ChipVLM
+    vlm = ChipVLM(hef)
+    if vlm.shape[0] != size:
+        raise SystemExit(f"HEF 的輸入是 {vlm.shape}，跟 --size {size} 不一樣")
+    print(f"晶片 VLM 載入 {vlm.load_sec:.1f} 秒，輸入 {vlm.shape}", flush=True)
+
+    def ask(rgb, question):
+        p, sec, _ = vlm.yes(rgb, question)
+        return p, sec
+
+    return ask
+
+
+def load(args):
+    return load_vlm_chip(args.chip, args.size) if args.chip else load_vlm(args.cpu)
+
+
+def prepare(crop, size):
+    """--size／--chip：跟晶片一樣裁成 size×size 正方形（hailo/vlm_hef.py 的 square）；不給就是原本長邊 CROP。"""
+    if not size:
+        return crop
+    from hailo.vlm_hef import square
+    return square(crop, size)
+
+
+HEAD_DIR = OUT_DIR / "head_crops"
+
+
+def head_crop(frame, persons, slot, size):
+    """床位裡的人（頭中心在床位範圍內、框最大的那個）的頭部特寫，轉正、縮成 size×size；床位裡沒有人就回傳 None。
+    幾何跟 infant_face_v3.head_faces 給 YuNet 的那張一樣，只是輸出 size 不是 HEAD_INPUT（experiments/airway_crops.py）。"""
+    from experiments.airway_crops import crop_head, slot_person
+    p = slot_person(frame, persons, slot["rect"])
+    return None if p is None else crop_head(frame, p, size)
+
+
+def prep_head(args):
+    """主環境跑 RTMO，把每個取樣點的頭部特寫存成 head_crops/<幀>.png（給筆電版、晶片版讀同一批圖）。"""
+    from pipeline.infant_face_v3 import load_rtmo, make_persons
+    run_pose = load_rtmo()
+    HEAD_DIR.mkdir(parents=True, exist_ok=True)
+    caps, log = {}, []
+    for video, doll, t, seg, slot in sample_points(args.videos):
+        if video not in caps:
+            caps[video] = cv2.VideoCapture(str(video_labels.find_video(video)))
+        caps[video].set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, frame = caps[video].read()
+        if not ok:
+            continue
+        persons = make_persons(run_pose(frame))
+        crop = head_crop(frame, persons, slot, args.size)
+        src = "head" if crop is not None else "slot"
+        if crop is None:
+            crop = prepare(crop_slot(frame, slot), args.size)
+        name = f"{video}_{doll}_{t:06.1f}"
+        cv2.imencode(".png", crop)[1].tofile(str(HEAD_DIR / f"{name}.png"))
+        log.append({"crop": name, "src": src, "persons": len(persons), "label": seg["label"], "note": seg["note"]})
+    with open(HEAD_DIR / "head_crops.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(log[0]))
+        writer.writeheader()
+        writer.writerows(log)
+    n_head = sum(r["src"] == "head" for r in log)
+    print(f"存了 {len(log)} 張（頭部特寫 {n_head}、找不到人退回床頭裁切 {len(log) - n_head}）→ {HEAD_DIR}")
+
+
+def read_head_crop(video, doll, t):
+    path = HEAD_DIR / f"{video}_{doll}_{t:06.1f}.png"
+    if not path.exists():
+        raise SystemExit(f"找不到 {path}：先在主環境跑 --prep-head")
+    return cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
+
+
 def variants(crop):
     """同一幀的三個版本：原圖、重新 JPEG 壓縮、左右翻轉。
     10/9 試跑發現：同一張圖原圖和 JPEG（平均每像素只差 1 階）P(Yes) 會從 0.42 跳到 0.92，
@@ -136,10 +223,14 @@ def variants(crop):
 
 
 def run(args):
-    ask = load_vlm(args.cpu)
-    (OUT_DIR / "crops").mkdir(parents=True, exist_ok=True)
+    ask = load(args)
+    crops_dir = OUT_DIR / f"crops{args.tag}"
+    crops_dir.mkdir(parents=True, exist_ok=True)
     points = sample_points(args.videos)[:args.limit or None]
     cache, caps, rows = {}, {}, []
+    head_src = {}
+    if args.crop == "head" and (HEAD_DIR / "head_crops.csv").exists():
+        head_src = {r["crop"]: r["src"] for r in read_csv(HEAD_DIR / "head_crops.csv")}
     for i, (video, doll, t, seg, slot) in enumerate(points, 1):
         if video not in caps:
             caps[video] = cv2.VideoCapture(str(video_labels.find_video(video)))
@@ -149,11 +240,16 @@ def run(args):
         if not ok:
             print(f"[略過] 讀不到 {video} {t}s")
             continue
-        crop = crop_slot(frame, slot)
+        if args.crop == "head":
+            crop = read_head_crop(video, doll, t)
+        else:
+            crop = prepare(crop_slot(frame, slot), args.size)
         name = f"{video}_{doll}_{t:06.1f}.jpg"
-        cv2.imencode(".jpg", crop)[1].tofile(str(OUT_DIR / "crops" / name))  # cv2.imwrite 在中文路徑會失敗
+        cv2.imencode(".jpg", crop)[1].tofile(str(crops_dir / name))  # cv2.imwrite 在中文路徑會失敗
         row = {"video": video, "doll": doll, "t": t, "label": seg["label"], "staged": seg["staged"], "note": seg["note"],
                "prone_gt": int("趴" in seg["note"]), "v3_slot": v3_slot_at(cache, video, doll, t), "crop": name}
+        if args.crop == "head":
+            row["crop_src"] = head_src.get(name[:-4], "")
         secs = []
         for vname, img in variants(crop):
             rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -177,7 +273,7 @@ def run(args):
 
 def timeline(args):
     """整支影片每 args.every 秒問一次「看得到口鼻嗎」（三個版本平均），不管標註；demo_render.py 用來畫「請看一眼」。"""
-    ask = load_vlm(args.cpu)
+    ask = load(args)
     for video in args.videos:
         slot = next(iter(ANNOTATIONS[video]["slots"].values()))
         cap = cv2.VideoCapture(str(video_labels.find_video(video)))
@@ -189,19 +285,19 @@ def timeline(args):
             if not ok:
                 continue
             row = {"t": round(float(t), 2)}
-            for vname, img in variants(crop_slot(frame, slot)):
+            for vname, img in variants(prepare(crop_slot(frame, slot), args.size)):
                 row[f"mouth_{vname}"] = round(ask(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), QUESTIONS["mouth"])[0], 4)
             row["p_mouth"] = round(statistics.mean(row[f"mouth_{v}"] for v in VARIANTS), 4)
             rows.append(row)
             print(f"  {video} {t:6.1f}s 口鼻看得到 {row['p_mouth']:.2f}", flush=True)
-        with open(OUT_DIR / f"timeline_{video}.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        with open(OUT_DIR / f"timeline_{video}{args.tag}.csv", "w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-        print(f"→ {OUT_DIR / f'timeline_{video}.csv'}")
+        print(f"→ {OUT_DIR / f'timeline_{video}{args.tag}.csv'}")
 
 
-def summarize(rows, th):
+def summarize(rows, th, where="RTX 3050 4GB、語言模型 4-bit"):
     for r in rows:
         for k in r:
             if k.startswith(tuple(f"{q}_" for q in QUESTIONS) + ("p_",)) and k != "prone_gt":
@@ -268,7 +364,7 @@ def summarize(rows, th):
         print(f"    {q:<8} 不一致 {flip_flop}/{len(rows)}（{flip_flop / len(rows):.0%}），最高與最低差的中位數 {spread:.2f}")
 
     secs = statistics.median(float(r["sec_per_question"]) for r in rows)
-    print(f"\n== 5. 速度：每問一題中位數 {secs:.2f} 秒（RTX 3050 4GB、語言模型 4-bit；不含讀影片、裁切）")
+    print(f"\n== 5. 速度：每問一題中位數 {secs:.2f} 秒（{where}；不含讀影片、裁切）")
 
 
 def main():
@@ -279,13 +375,28 @@ def main():
     ap.add_argument("--th", type=float, default=0.5, help="P(口鼻看得到) 的門檻（預設 0.5）")
     ap.add_argument("videos", nargs="*", help="只跑這些影片（不給＝全部）；結果另存 frames_<影片>.csv，不蓋掉全部的")
     ap.add_argument("--every", type=float, default=0, help="改成整支影片每幾秒問一次口鼻題（示範影片用），存成 timeline_<影片>.csv")
+    ap.add_argument("--size", type=int, default=0, help="裁成這個大小的正方形再問（晶片的輸入是 336；不給＝原本長邊 448）")
+    ap.add_argument("--chip", metavar="HEF", help="改用 UGen300 上的 VLM（hailo/vlm_hef.py；--size 自動設成 336）")
+    ap.add_argument("--crop", choices=["slot", "head"], default="slot",
+                    help="VLM 看什麼：slot＝床頭範圍（原本的）、head＝RTMO 找到的頭部特寫（先跑 --prep-head）")
+    ap.add_argument("--prep-head", action="store_true", help="只存頭部特寫到 head_crops/（主環境，要 RTMO）")
     args = ap.parse_args()
+    if args.chip or args.crop == "head" or args.prep_head:
+        args.size = args.size or 336
+    if args.prep_head:
+        return prep_head(args)
+    args.tag = ("_chip" if args.chip else (f"_{args.size}" if args.size else "")) + ("_head" if args.crop == "head" else "")
     if args.every:
+        if args.crop == "head":
+            raise SystemExit("--every 還不支援 --crop head（每秒都要跑 RTMO，還沒寫）")
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         return timeline(args)
-    args.frames_csv = OUT_DIR / (f"frames_{'_'.join(args.videos)}.csv" if args.videos else "frames.csv")
+    args.frames_csv = OUT_DIR / (f"frames_{'_'.join(args.videos)}{args.tag}.csv" if args.videos else f"frames{args.tag}.csv")
     rows = read_csv(args.frames_csv) if args.reuse else run(args)
-    summarize(rows, args.th)
+    where = ("UGen300 晶片、greedy 只生 1 個字" if args.chip else
+             "RTX 3050 4GB、語言模型 4-bit" + (f"、輸入 {args.size}×{args.size}" if args.size else "")) \
+        + ("、頭部特寫" if args.crop == "head" else "")
+    summarize(rows, args.th, where)
     print(f"\n輸出：{OUT_DIR}")
 
 
