@@ -32,7 +32,7 @@ from demo import demo_render
 from demo.demo_render import PRODUCT, STATES, font, wrap
 from evaluation import crib_context, video_labels
 from pipeline import crib_detect, crib_state, infant_face_v3, infant_face_v5
-from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
+from pipeline.face_common import FACE_SCORE_TH, create_face_detector
 
 FPS = crib_context.FPS  # 每秒判讀幾幀（跟 eval_video.py、crib_context.py 一樣）
 TITLE = f"{PRODUCT} · live"
@@ -177,8 +177,8 @@ def main():
     print("載入模型（RTMO、YuNet）…")
     infant_face_v3.DET_TH = args.det_th
     run_pose = infant_face_v3.load_rtmo()
-    det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
-    det_v5 = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), infant_face_v5.FACE_TH_V5)
+    det = create_face_detector(FACE_SCORE_TH)
+    det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
     slots, rots = {doll: slot["rect"]}, {doll: slot["rot"]}
 
     cap = cv2.VideoCapture(str(video_labels.find_video(args.video)))

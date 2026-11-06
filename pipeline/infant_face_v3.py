@@ -27,8 +27,8 @@ import cv2
 import numpy as np
 
 from pipeline.face_common import (  # 和 v2 共用的門檻、整張圖人臉偵測、配對與畫圖；不依賴 YOLOv8
-    FACE_MODEL, FACE_SCORE_TH, GREEN, KPT_TH, OUT_DIR, RED, ROOT, YELLOW,
-    assign_faces, detect_faces, make_person, put_label,
+    FACE_SCORE_TH, GREEN, KPT_TH, OUT_DIR, RED, ROOT, YELLOW, YUNET_HEF_ENV,
+    assign_faces, create_face_detector, detect_faces, make_person, put_label,
 )
 
 L_SHOULDER, R_SHOULDER, L_HIP, R_HIP = 5, 6, 11, 12
@@ -39,11 +39,59 @@ HEAD_FACE_TH = 0.8  # 頭部裁切找到的臉要更高分才算（整張圖是 
 DUP_DIST = 0.1      # 兩人對應關鍵點的平均距離 < 框對角線 × 這個值，就當成同一人
 
 
+RTMO_ONNX_ENV = "FG_RTMO_ONNX"   # 換成別的 RTMO-m ONNX，例如 hailo/qat_rtmo.py 訓練後的模型、hailo/sim_quant.py --export-full 的模擬量化版
+RTMO_HEF_ENV = "FG_RTMO_HEF"     # RTMO 的前段改在 UGen300（Hailo-10H）上跑這顆 HEF，後段在主機（hailo/rtmo_post.py）；要裝 pyHailoRT
+
+
+def rtmo_tag():
+    """換了模型時接在評估輸出檔名後面的代號：RTMO 換 ONNX 是 rtmo-<檔名>、改在晶片上是 chip-<檔名>；
+    YuNet 改在晶片上再接 chip-<檔名>（例如 chip-rtmo_D1_chip-yunet_A）。都用預設模型時是空字串，輸出位置跟以前一樣。"""
+    parts = []
+    hef, path = os.environ.get(RTMO_HEF_ENV), os.environ.get(RTMO_ONNX_ENV)
+    if hef:
+        parts.append(f"chip-{Path(hef).stem}")
+    elif path:
+        parts.append(f"rtmo-{Path(path).stem}")
+    yunet = os.environ.get(YUNET_HEF_ENV)
+    if yunet:
+        parts.append(f"chip-{Path(yunet).stem}")
+    return "_".join(parts)
+
+
 def load_rtmo():
-    """回傳找人函式：輸入 BGR 圖，輸出 [(box_xyxy, kpts(17,3)), ...]。"""
-    from rtmlib import Body
+    """回傳找人函式：輸入 BGR 圖，輸出 [(box_xyxy, kpts(17,3)), ...]。
+    預設用 rtmlib 的 RTMO-m（balanced）；有設環境變數 FG_RTMO_ONNX 就改用那個 ONNX（輸入輸出要跟 RTMO-m 一樣）；
+    有設 FG_RTMO_HEF 就把前段放到 UGen300 上跑（前處理、NMS、門檻都跟 ONNX 版一樣）。"""
     from rtmlib.tools.object_detection.post_processings import multiclass_nms
-    rtmo = Body(pose="rtmo", mode="balanced", backend="onnxruntime", device="cpu").pose_model
+    hef = os.environ.get(RTMO_HEF_ENV)
+    path = os.environ.get(RTMO_ONNX_ENV)
+    if hef and path:
+        raise SystemExit(f"{RTMO_HEF_ENV} 和 {RTMO_ONNX_ENV} 只能設一個")
+    if hef:
+        from rtmlib import Body
+        from hailo.hailo_infer import Hef
+        from hailo.rtmo_post import Post
+        rtmo = Body(pose="rtmo", mode="balanced", backend="onnxruntime", device="cpu").pose_model   # 只借它的前處理和 nms_thr
+        chip, post = Hef(Path(hef).resolve()), Post()
+
+        def inference(x):
+            """x：rtmlib 前處理後的 640×640×3 uint8（等比例縮放、補 114、BGR）→ 跟 ONNX 一樣的 dets、keypoints。"""
+            return post(chip(x))
+        rtmo.inference = inference
+        print(f"RTMO 前段在 UGen300 上跑 {hef}（{RTMO_HEF_ENV}），後段在主機")
+    elif path:
+        import onnxruntime as ort
+        from rtmlib import RTMO
+        rtmo = RTMO(str(Path(path).resolve()), model_input_size=(640, 640), backend="onnxruntime", device="cpu")
+        # 關掉 onnxruntime 的圖最佳化：模擬量化的模型（QuantizeLinear／DequantizeLinear）被最佳化之後會改用整數運算，
+        # 結果跟模擬不一樣（2026/11/05：同一張圖找到的人數不同）。浮點模型關掉只是比較慢，結果一樣。
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        rtmo.session = ort.InferenceSession(str(Path(path).resolve()), so, providers=["CPUExecutionProvider"])
+        print(f"RTMO 用 {path}（{RTMO_ONNX_ENV}，onnxruntime 不做圖最佳化）")
+    else:
+        from rtmlib import Body
+        rtmo = Body(pose="rtmo", mode="balanced", backend="onnxruntime", device="cpu").pose_model
 
     def run(img):
         # rtmlib 的 RTMO 只回傳關鍵點；照它的後處理重做一次，順便把人框留下來
@@ -186,6 +234,6 @@ if __name__ == "__main__":
         sys.exit("用法：uv run python -m pipeline.infant_face_v3 圖片1.jpg [圖片2.jpg ...]"
                  "（dataset/ 不在 GitHub 上，請自己指定圖片）")
     run_pose = load_rtmo()
-    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
+    detector = create_face_detector(FACE_SCORE_TH)
     for path in paths:
         analyze(run_pose, detector, path)

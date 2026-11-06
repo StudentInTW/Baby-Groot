@@ -44,8 +44,8 @@ from evaluation.video_labels import read_csv
 from pipeline import infant_face_v3, infant_face_v4, infant_face_v5
 from pipeline.crib_detect import MODES, detect
 from pipeline.crib_state import AlertState
-from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, RED, YELLOW, put_label
-from pipeline.infant_face_v3 import load_rtmo
+from pipeline.face_common import FACE_SCORE_TH, GREEN, RED, YELLOW, create_face_detector, put_label
+from pipeline.infant_face_v3 import load_rtmo, rtmo_tag
 
 ROOT = Path(__file__).resolve().parent.parent
 # 不是娃娃的影片要指定名稱才跑，不混進娃娃影片的合計（數字才跟之前的對得上）；local_ 標註檔裡的影片也一樣
@@ -276,7 +276,7 @@ def main():
     infant_face_v3.DET_TH = args.det_th
     videos = load_annotations()
     names = args.videos or sorted(v for v, a in videos.items() if v not in NOT_DOLL and not a["local"])
-    cond = tag(args.gray, args.dim)  # 灰階／關燈的結果另外放，不蓋掉原圖的
+    cond = "_".join(filter(None, [tag(args.gray, args.dim), rtmo_tag()]))  # 灰階／關燈、換了 RTMO 模型的結果另外放
     args.out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
     args.out_dir.mkdir(parents=True, exist_ok=True)
     print(f"影像條件：{describe(args.gray, args.dim)}")
@@ -292,8 +292,8 @@ def main():
         else:
             if run_pose is None:
                 run_pose = load_rtmo()
-                detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
-                det_v5 = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), infant_face_v5.FACE_TH_V5)
+                detector = create_face_detector(FACE_SCORE_TH)
+                det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
             rows, duration = run_video(name, ann, args, run_pose, detector, det_v5)
         results, alerts = evaluate(rows, ann["segments"], args.on, args.off, args.blip)
         report(name, results, args.on, args.off, args.blip)

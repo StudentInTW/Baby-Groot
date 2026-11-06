@@ -24,8 +24,19 @@ MIN_BODY_KPTS = 3               # 可見身體點少於這個數的框當雜訊�
 HEAD_R_RATIO = 0.3              # 臉中心離頭中心不超過「框長邊 × 這個比例」，才算這個人的臉
 FACE_SCORE_TH = 0.7             # YuNet 分數門檻；測試圖上的假臉（拳頭、大人的手）最高 0.57
 FACE_SCALES = (640, 1280)       # 長邊縮到這些尺寸各跑一次：YuNet 只擅長 10–300 px 的臉
+YUNET_HEF_ENV = "FG_YUNET_HEF"  # YuNet 改在 UGen300（Hailo-10H）上跑這顆 HEF（hailo/yunet_hef.py）；要裝 pyHailoRT
 
 RED, GREEN, YELLOW, GRAY = (0, 0, 255), (0, 170, 0), (0, 200, 255), (150, 150, 150)
+
+
+def create_face_detector(score_th=FACE_SCORE_TH):
+    """YuNet 人臉偵測器。預設是 OpenCV 的 FaceDetectorYN（CPU）；有設環境變數 FG_YUNET_HEF 就改在 UGen300 上跑，
+    介面一樣（setInputSize、detect），主流程不用分兩套。"""
+    hef = os.environ.get(YUNET_HEF_ENV)
+    if hef:
+        from hailo.yunet_hef import YuNetHef
+        return YuNetHef(hef, score_th)
+    return cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), score_th)
 
 
 def detect_faces(detector, img):

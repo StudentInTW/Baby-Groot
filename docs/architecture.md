@@ -94,14 +94,21 @@
 
 - **姿態：RTMO-m（Apache-2.0）**——偵測率最高、一次處理全畫面。備案 RTMPose-m＋YOLOX-m。YOLOv8 出局（AGPL，跟得獎作品要無條件商用＋再授權不相容）。
   **最終以 Hailo-10H 能不能編譯為準**（RTMO 的 ONNX 把解碼包在裡面、輸出人數動態，可能較難轉）。
-  10/26 現況：YuNet 已編譯成 HEF，RTMO 還沒試（[`hailo/結果.md`](../hailo/結果.md)）。
+  11/06 現況：RTMO 切掉解碼、做量化感知訓練後編成 HEF（D1，全部 8 位元），YuNet 也編好；兩個都在 UGen300 上
+  接上主流程跑完三套評估。RTMO 上晶片跟原版一樣；YuNet 上晶片差一點、單床反而變慢（[`hailo/結果.md`](../hailo/結果.md)）。
 - **人臉：YuNet**（MIT）。
 - **VLM：Qwen2-VL-2B-Instruct**（Apache-2.0），Hailo 有 10H 版本。
 - 不用 MediaPipe Pose（靠臉找人、假設頭看得到，又為單人設計）。
 
-## 運算量（筆電 CPU，`evaluation/bench_multistream.py`）
+## 運算量（Harry 的筆電，`evaluation/bench_multistream.py`）
 
-Intel i7-11800H，每床一個程序、各 1 條執行緒：
+UGen300 上（2026/11/06，720p，每床一條執行緒、共用晶片上的模型；細節在 `hailo/結果.md`「主流程的速度」）：
+
+- **RTMO 在晶片、YuNet 在 CPU**：單床每幀 89 ms，合計每秒約 30 幀 → 每床 1 FPS 約 30 床，但 CPU 用到 99%。
+- **兩個都在晶片**：單床每幀 153 ms，合計每秒約 15 幀，CPU 只用 35%。YuNet 每幀要呼叫 4–5 次、都是小圖，
+  每次含 USB 和主機轉換約 14 ms（晶片本身 2.5 ms），所以放上晶片反而慢；好處是 CPU 留給解串流。
+
+只用 CPU（Intel i7-11800H，每床一個程序、各 1 條執行緒）：
 
 - 完整流程（RTMO＋找臉＋床位）720p 每幀約 190 ms，**其中 7–8 成是 RTMO**；8 個程序合計每秒約 8 幀 → **每床 1 FPS 約 8 床**。
   一間嬰兒室暫抓 25 床（粗估的上限，還沒有正式統計），差約 3 倍——正好是要搬上 UGen300 的部分。

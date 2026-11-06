@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from evaluation import crib_context, eval_video, video_labels
 from pipeline import crib_detect, crib_state, infant_face_v5
-from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
+from pipeline.face_common import FACE_SCORE_TH, create_face_detector
 from pipeline.infant_face_v3 import load_rtmo
 from evaluation.video_labels import read_csv
 
@@ -129,8 +129,8 @@ def face_boxes(name, ann, start, end):
     from pipeline import infant_face_v3
     infant_face_v3.DET_TH = 0.15
     run_pose = load_rtmo()
-    det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
-    det_v5 = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), infant_face_v5.FACE_TH_V5)
+    det = create_face_detector(FACE_SCORE_TH)
+    det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
     slots = {d: s["rect"] for d, s in ann["slots"].items()}
     rots = {d: s["rot"] for d, s in ann["slots"].items()}
     cap = cv2.VideoCapture(str(video_labels.find_video(name)))

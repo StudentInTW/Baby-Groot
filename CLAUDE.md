@@ -33,8 +33,8 @@
   - VLM 複判（實驗，另一個虛擬環境 `.venv-vlm`）：`.venv-vlm/Scripts/python -m experiments.vlm_spike`，VLM 看床位檔 `head_x0..head_y1` 的床頭範圍。
   - 娃娃擺拍（測危險情境召回）：`eval_doll`，標註在 `labels/doll_labels.csv`。**計分單位是「每隻娃娃」**，不是每張照片——同框兩隻都危險、只抓到一隻時，用整張圖算會被判對。結果和失敗模式見 `docs/娃娃測試結果.md`。
   - 灰階／暗光（模擬 IR 夜視，選跑）：三支都有 `--gray`、`--dim 0.3`（`evaluation/degrade.py`），結果另外放 `_<條件>` 的檔名／資料夾、不蓋掉原圖基準；SyRIP 用 `score_relabel --eval-dir outputs/syrip_eval_<條件>` 算。**灰階下口鼻膚色檢查（v4/v5）失效**，結果見 `docs/娃娃測試結果.md` §8。
-- **不訓練模型**：用現成、授權寬鬆的模型加上演算法設計（例外條件見 `docs/private/decisions.md`「技術與產品政策」）。
+- **可以訓練模型（2026/11/05 起）**：原本為了省事只用現成、授權寬鬆的模型加上演算法設計；表現會更好就訓練或微調（例如 RTMO 量化掉太多時）。訓練資料的授權規定見 `docs/private/decisions.md`「技術與產品政策」：要允許商用，SyRIP、網路影像、評估用的資料都不能拿來訓練。
 
 ## 範圍護欄
 
-UGen300 11/02 起寄送，實機工作（HEF 轉換、HailoRT、晶片上的速度／功耗）現在都可以做：計畫在 `hailo/轉換計畫.md`，進度與停損點在 `docs/private/status.md`「B 部署計畫」，每一步的指令、錯誤訊息和數字寫進 `hailo/結果.md`。11/02 現況：YuNet 已編譯成 HEF、RTMO 還沒試。晶片上沒實測過的數字（速度、路數、功耗）不能寫成已達成。
+UGen300 11/02 起寄送，實機工作（HEF 轉換、HailoRT、晶片上的速度／功耗）現在都可以做：計畫在 `hailo/轉換計畫.md`，進度與停損點在 `docs/private/status.md`「B 部署計畫」，每一步的指令、錯誤訊息和數字寫進 `hailo/結果.md`。**11/06 現況**：UGen300 裝好（HailoRT 5.4.0，步驟和陷阱見 `hailo/安裝筆記.md`）。RTMO 定案用 D1（量化感知訓練、全部 8 位元），設 `FG_RTMO_HEF=model/rtmo_D1.hef`，主流程和三套評估的 RTMO 就改在晶片上跑（`hailo/hailo_infer.py`）。YuNet 也接上了（設 `FG_YUNET_HEF=model/yunet_A.hef`，`hailo/yunet_hef.py`），但準確度差一點、單床反而變慢、會讓 USB 偶爾斷線，要不要放晶片還沒決定（速度和斷線見 `hailo/結果.md`「主流程的速度」「裝置斷線」）。pyHailoRT 不在 `pyproject.toml` 裡，`uv sync` 會把它移除，要重裝。晶片上沒實測過的數字（速度、路數、功耗）不能寫成已達成；目前量過單一模型的速度和主流程的吞吐量（`evaluation.bench_multistream --threads`：筆電主機、720p、用同一支影片模擬多床、不含解串流；RTMO 在晶片約 30 幀/秒、兩個都在晶片約 15），功耗還沒量。

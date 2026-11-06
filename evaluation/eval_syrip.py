@@ -45,11 +45,11 @@ import cv2
 import numpy as np
 
 from pipeline.face_common import (  # v2 的人臉偵測、配對規則與門檻
-    FACE_MODEL, FACE_SCORE_TH, assign_faces, detect_faces, make_person,
+    FACE_SCORE_TH, assign_faces, create_face_detector, detect_faces, make_person,
 )
 from pipeline import infant_face_v5
 from evaluation.degrade import degrade, describe, tag
-from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
+from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons, rtmo_tag
 from pipeline.infant_face_v4 import detect_faces_v4, drop_covered_faces
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -193,8 +193,9 @@ def main():
     models = load_models(args.models)
     # v5 要抓側臉，偵測門檻降到 FACE_TH_V5（0.3），再靠三級分類擋假臉
     face_th = infant_face_v5.FACE_TH_V5 if args.face == "v5" else FACE_SCORE_TH
-    face_det = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), face_th)
-    cond = tag(args.gray, args.dim)  # 灰階／關燈的結果另外放，不蓋掉原圖的（score_relabel.py 預設讀原圖那份）
+    face_det = create_face_detector(face_th)
+    # 灰階／關燈、換了模型（FG_RTMO_ONNX、FG_RTMO_HEF、FG_YUNET_HEF）的結果另外放，不蓋掉原圖的（score_relabel.py 預設讀原圖那份）
+    cond = "_".join(filter(None, [tag(args.gray, args.dim), rtmo_tag()]))
     out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 

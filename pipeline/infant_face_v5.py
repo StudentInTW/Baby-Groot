@@ -35,7 +35,7 @@ import numpy as np
 from pipeline import face_common as fc
 from pipeline import infant_face_v3 as v3
 from pipeline import infant_face_v4 as v4
-from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH, GREEN, OUT_DIR, RED, assign_faces, put_label
+from pipeline.face_common import FACE_SCORE_TH, GREEN, OUT_DIR, RED, assign_faces, put_label
 from pipeline.infant_face_v4 import ORANGE, drop_covered_faces, mouth_skin_ratio
 from pipeline.infant_face_v3 import load_rtmo, make_persons
 
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     if not paths:
         sys.exit("用法：uv run python -m pipeline.infant_face_v5 圖片1.jpg [圖片2.jpg ...]")
     run_pose = load_rtmo()
-    det_normal = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
-    det_low = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_TH_V5)
+    det_normal = fc.create_face_detector(FACE_SCORE_TH)
+    det_low = fc.create_face_detector(FACE_TH_V5)
     for path in paths:
         analyze(run_pose, det_normal, det_low, path)

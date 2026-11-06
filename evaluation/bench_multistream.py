@@ -17,10 +17,15 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
 
 測試幀取自自己拍的娃娃影片 IMG_8115（橫式 1080p、單一娃娃俯拍，最接近每床鏡頭），縮到 --res 指定的高度。
 
+模型放在 UGen300 上（設環境變數 FG_RTMO_HEF、FG_YUNET_HEF）時用 --threads：一個程序、W 條執行緒共用晶片上
+同一份模型（不用每個程序各開一次裝置、各載一次模型），每條執行緒各自一個 YuNet 偵測器，RTMO 共用。
+
 用法：
     uv run python -m evaluation.bench_multistream                         # 720p、1080p 都跑，W = 1 2 4 8 12 16
     uv run python -m evaluation.bench_multistream --res 720 --workers 1 8 --sec 10   # 試跑
-輸出：outputs/bench/cpu_multistream.csv（每種設定一列）、終端機摘要
+    FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef \
+        uv run python -m evaluation.bench_multistream --threads --modes full --workers 1 2 4 8
+輸出：outputs/bench/cpu_multistream.csv（換了模型時是 multistream_<代號>.csv；每種設定一列）、終端機摘要
 """
 
 import argparse
@@ -73,10 +78,10 @@ def load_frames(height):
 
 
 def load_models():
-    from pipeline.face_common import FACE_MODEL, FACE_SCORE_TH
+    from pipeline.face_common import FACE_SCORE_TH, create_face_detector
     from pipeline.infant_face_v3 import load_rtmo
     run_pose = load_rtmo()
-    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), FACE_SCORE_TH)
+    detector = create_face_detector(FACE_SCORE_TH)
     return run_pose, detector
 
 
@@ -107,8 +112,8 @@ def process(run_pose, detector, frame, mode, timing=None):
     return not visible
 
 
-def latency(frames, mode, repeat):
-    run_pose, detector = load_models()
+def latency(frames, mode, repeat, models=None):
+    run_pose, detector = models or load_models()
     for f in frames[:3]:  # 暖機
         process(run_pose, detector, f, mode)
     timing, totals = {}, []
@@ -154,6 +159,37 @@ def throughput(height, mode, workers, sec):
     return counter.value / min(elapsed, sec) if elapsed else 0.0, cpu
 
 
+def throughput_threads(run_pose, frames, mode, workers, sec):
+    """一個程序、workers 條執行緒同時跑（模型放晶片時用）：RTMO 共用，每條執行緒自己一個 YuNet 偵測器
+    （OpenCV 的偵測器不能多條執行緒共用；晶片版共用同一顆模型）。回傳 (每秒共幾幀, CPU %)。"""
+    import threading
+
+    import psutil
+    from pipeline.face_common import FACE_SCORE_TH, create_face_detector
+    detectors = [create_face_detector(FACE_SCORE_TH) for _ in range(workers)]
+    counts = [0] * workers
+    start = threading.Barrier(workers + 1)
+
+    def loop(k):
+        process(run_pose, detectors[k], frames[k % len(frames)], mode)   # 暖機
+        start.wait()
+        end, i = time.perf_counter() + sec, k
+        while time.perf_counter() < end:
+            process(run_pose, detectors[k], frames[i % len(frames)], mode)
+            i, counts[k] = i + workers, counts[k] + 1
+
+    threads = [threading.Thread(target=loop, args=(k,)) for k in range(workers)]
+    for t in threads:
+        t.start()
+    start.wait()
+    psutil.cpu_percent(None)
+    t0 = time.perf_counter()
+    for t in threads:
+        t.join()
+    elapsed = time.perf_counter() - t0
+    return sum(counts) / elapsed, psutil.cpu_percent(None)
+
+
 def decode_fps(height, sec=10):
     """預設執行緒下，解碼 IMG_8115 並縮到 height 的速度（每秒幾幀）。"""
     import psutil
@@ -180,11 +216,17 @@ def main():
     ap.add_argument("--workers", type=int, nargs="+", default=[1, 2, 4, 8, 12, 16], help="同時跑幾個工作程序")
     ap.add_argument("--sec", type=float, default=20, help="每種設定跑幾秒（預設 20）")
     ap.add_argument("--repeat", type=int, default=2, help="延遲測試把測試幀跑幾輪（預設 2）")
+    ap.add_argument("--threads", action="store_true",
+                    help="用一個程序裡的多條執行緒代替多個程序（模型放 UGen300 上時用）")
     args = ap.parse_args()
 
     import psutil
-    print(f"CPU：{platform.processor()}｜實體核心 {psutil.cpu_count(False)}、邏輯核心 {psutil.cpu_count()}")
+    from pipeline.infant_face_v3 import rtmo_tag
+    print(f"CPU：{platform.processor()}｜實體核心 {psutil.cpu_count(False)}、邏輯核心 {psutil.cpu_count()}"
+          + (f"｜模型：{rtmo_tag()}" if rtmo_tag() else ""))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    models = load_models() if args.threads else None   # 執行緒模式只載一次（晶片上的模型不要重複開）
+    unit = "條執行緒" if args.threads else "個程序"
     rows = []
     for height in args.res:
         frames = load_frames(height)
@@ -192,12 +234,15 @@ def main():
         print(f"\n== {height}p（{frames[0].shape[1]}×{height}，{len(frames)} 幀輪流）"
               f"｜解碼 {codec}：{dec:.0f} 幀/秒（CPU {dec_cpu:.0f}%）")
         for mode in args.modes:
-            ms = latency(frames, mode, args.repeat)
+            ms = latency(frames, mode, args.repeat, models)
             steps = "、".join(f"{k} {v:.0f}" for k, v in ms.items() if k not in ("total", "total_p95"))
             print(f"  [{mode}] 單程序每幀 {ms['total']:.0f} ms（p95 {ms['total_p95']:.0f}）：{steps} ms")
             for w in args.workers:
-                fps, cpu = throughput(height, mode, w, args.sec)
-                print(f"  [{mode}] {w:>2} 個程序 → 共 {fps:5.1f} 幀/秒（CPU {cpu:3.0f}%）"
+                if args.threads:
+                    fps, cpu = throughput_threads(models[0], frames, mode, w, args.sec)
+                else:
+                    fps, cpu = throughput(height, mode, w, args.sec)
+                print(f"  [{mode}] {w:>2} {unit} → 共 {fps:5.1f} 幀/秒（CPU {cpu:3.0f}%）"
                       f"＝每路 1 FPS 撐 {int(fps)} 路、2 FPS 撐 {int(fps / 2)} 路")
                 rows.append({"height": height, "mode": mode, "workers": w, "fps_total": round(fps, 2),
                              "cpu_percent": round(cpu), "latency_ms": round(ms["total"]),
@@ -205,11 +250,12 @@ def main():
                              "decode_cpu_percent": round(dec_cpu), "codec": codec,
                              **{f"{k}_ms": round(v, 1) for k, v in ms.items() if k not in ("total", "total_p95")}})
     keys = sorted({k for r in rows for k in r}, key=lambda k: list(rows[0]).index(k) if k in rows[0] else 99)
-    with open(OUT_DIR / "cpu_multistream.csv", "w", newline="", encoding="utf-8-sig") as fh:
+    out = OUT_DIR / (f"multistream_{rtmo_tag()}.csv" if rtmo_tag() else "cpu_multistream.csv")
+    with open(out, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=keys)
         writer.writeheader()
         writer.writerows(rows)
-    print(f"\n→ {OUT_DIR / 'cpu_multistream.csv'}")
+    print(f"\n→ {out}")
 
 
 if __name__ == "__main__":

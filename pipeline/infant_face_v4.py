@@ -30,7 +30,7 @@ import numpy as np
 # 門檻用「模組.常數」在呼叫時讀取（不用 from import），eval_doll.py 的 --face-th 等參數才改得到
 from pipeline import face_common as fc
 from pipeline import infant_face_v3 as v3
-from pipeline.face_common import FACE_MODEL, GREEN, OUT_DIR, RED, YELLOW, assign_faces, put_label
+from pipeline.face_common import GREEN, OUT_DIR, RED, YELLOW, assign_faces, put_label
 from pipeline.infant_face_v3 import load_rtmo, make_persons, up_angle
 
 ORANGE = (0, 140, 255)
@@ -203,6 +203,6 @@ if __name__ == "__main__":
     if not paths:
         sys.exit("用法：uv run python -m pipeline.infant_face_v4 圖片1.jpg [圖片2.jpg ...]")
     run_pose = load_rtmo()
-    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), fc.FACE_SCORE_TH)
+    detector = fc.create_face_detector(fc.FACE_SCORE_TH)
     for path in paths:
         analyze(run_pose, detector, path)

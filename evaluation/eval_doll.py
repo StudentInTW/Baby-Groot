@@ -52,10 +52,10 @@ from pipeline import face_common
 from pipeline import infant_face_v3
 from pipeline import infant_face_v4
 from pipeline.face_common import (
-    FACE_MODEL, FACE_SCORE_TH, GREEN, MIN_BODY_KPTS, RED, YELLOW, assign_faces, put_label,
+    FACE_SCORE_TH, GREEN, MIN_BODY_KPTS, RED, YELLOW, assign_faces, create_face_detector, put_label,
 )
 from evaluation.degrade import degrade, describe
-from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons
+from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons, rtmo_tag
 
 ROOT = Path(__file__).resolve().parent.parent
 IMG_DIR = ROOT / "dataset" / "infant_jpg_without_video"
@@ -262,12 +262,12 @@ def main():
     knobs = [("dim", args.dim), ("px", args.max_side), ("det", args.det_th),
              ("face", args.face_th), ("hface", args.head_face_th)]
     suffix = ("_v4" if args.face == "v4" else "") + ("_gray" if args.gray else "") \
-        + "".join(f"_{k}{v:g}" for k, v in knobs if v)
+        + "".join(f"_{k}{v:g}" for k, v in knobs if v) + (f"_{rtmo_tag()}" if rtmo_tag() else "")   # 換了 RTMO 模型的結果另外放
     vis_dir = OUT_DIR / f"vis{suffix}"
     vis_dir.mkdir(parents=True, exist_ok=True)
 
     run_pose = load_rtmo()
-    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (320, 320), args.face_th or FACE_SCORE_TH)
+    detector = create_face_detector(args.face_th or FACE_SCORE_TH)
     rows, secs = [], defaultdict(float)
 
     for n, f in enumerate(files, 1):
