@@ -207,6 +207,7 @@ uv run python -m evaluation.eval_video               # doll videos: per-crib jud
 uv run python -m evaluation.eval_video --reuse --on 2  # recompute with another alert rule, no new detection
 uv run python -m evaluation.crib_context             # caregiving pause + empty crib (run eval_video first)
 uv run python -m evaluation.eval_doll --det-th 0.15  # doll photos, scored per doll
+uv run python -m evaluation.eval_doll --det-th 0.15 --batch 4   # only one shooting batch (the labels' batch column)
 uv run python -m evaluation.eval_syrip --face v3     # real infant photos (dataset/SyRIP_Posture.zip)
 uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels
 uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles

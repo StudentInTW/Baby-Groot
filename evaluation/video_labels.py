@@ -64,8 +64,9 @@ def load():
 
 
 def find_video(name):
-    """在 dataset/doll_video/、dataset/ 找同名影片（.MOV／.mp4）。"""
-    for folder in VIDEO_DIRS:
+    """在 dataset/doll_video/、dataset/，以及 dataset/ 底下一層的資料夾（例如每一批拍攝的資料夾）找同名影片（.MOV／.mp4）。"""
+    batch_dirs = sorted(p for p in (ROOT / "dataset").glob("*") if p.is_dir() and p not in VIDEO_DIRS)
+    for folder in (*VIDEO_DIRS, *batch_dirs):
         for ext in VIDEO_EXTS:
             path = folder / f"{name}{ext}"
             if path.exists():

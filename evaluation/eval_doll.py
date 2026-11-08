@@ -240,6 +240,7 @@ def main():
     ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
     ap.add_argument("--max-side", type=int, default=0, help="長邊縮到這個像素（0＝原圖）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張")
+    ap.add_argument("--batch", default="", help="只跑這幾批照片（例如 4 或 1,2；看標註檔的 batch 欄），結果檔名加 _b<批次>")
     ap.add_argument("--save-vis", action="store_true", help="每張都存標註圖（預設只存判錯的）")
     ap.add_argument("--face", choices=["v3", "v4"], default="v3",
                     help="v4＝v3 再加口鼻檢查（infant_face_v4.py），輸出檔名加 _v4")
@@ -258,11 +259,15 @@ def main():
         infant_face_v3.HEAD_FACE_TH = args.head_face_th
 
     by_file = load_labels()
+    if args.batch:
+        keep = set(args.batch.split(","))
+        by_file = {f: ds for f, ds in by_file.items() if ds[0]["batch"] in keep}
     files = sorted(by_file)[:args.limit or None]
     knobs = [("dim", args.dim), ("px", args.max_side), ("det", args.det_th),
              ("face", args.face_th), ("hface", args.head_face_th)]
     suffix = ("_v4" if args.face == "v4" else "") + ("_gray" if args.gray else "") \
-        + "".join(f"_{k}{v:g}" for k, v in knobs if v) + (f"_{rtmo_tag()}" if rtmo_tag() else "")   # 換了 RTMO 模型的結果另外放
+        + "".join(f"_{k}{v:g}" for k, v in knobs if v) + (f"_{rtmo_tag()}" if rtmo_tag() else "") \
+        + (f"_b{args.batch.replace(',', '-')}" if args.batch else "")   # 換了 RTMO 模型、只跑某幾批的結果另外放
     vis_dir = OUT_DIR / f"vis{suffix}"
     vis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -340,7 +345,8 @@ def main():
         + (f"｜長邊 {args.max_side}px" if args.max_side else "｜原圖 4284×5712") \
         + (f"｜找人門檻 {args.det_th:g}" if args.det_th else "") \
         + (f"｜整張圖人臉門檻 {args.face_th:g}" if args.face_th else "") \
-        + (f"｜頭部人臉門檻 {args.head_face_th:g}" if args.head_face_th else "")
+        + (f"｜頭部人臉門檻 {args.head_face_th:g}" if args.head_face_th else "") \
+        + (f"｜第 {args.batch} 批" if args.batch else "")
     report(rows, secs, len(files), title)
     print(f"\n明細：outputs/doll_eval/dolls{suffix}.csv｜標註圖：outputs/doll_eval/vis{suffix}/")
 
