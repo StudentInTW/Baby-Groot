@@ -28,11 +28,11 @@
 - **網路上找到的影片／圖片也只能內部評估**：標註放不進 repo 的 `labels/local_video_slots.csv`／`labels/local_video_labels.csv`（格式同 `labels/doll_video_*.csv`，`evaluation/video_labels.py` 會一起讀），名稱不寫進程式和公開文件。
 - **評估流程**（改了 `pipeline/` 就三套都要重跑；指令前面都是 `uv run python -m evaluation.`）：
   - SyRIP（測誤報）：`eval_syrip --face v3` 跑分 → `score_relabel` 用人工標註重算真實的誤報率。注意用 `--limit` 試跑會覆蓋 `outputs/syrip_eval/` 裡的 CSV。
-  - 娃娃影片（測床位模式和警示狀態機）：`eval_video`，床位在 `labels/doll_video_slots.csv`、時間軸在 `labels/doll_video_labels.csv`（只列手不在畫面裡的片段；`label` 另有 `empty` 空床、`staged` 另有 `prone` 趴睡但口鼻看得到，都不算進誤報）。結果見 `docs/影片測試結果.md`。
+  - 娃娃影片（測床位模式和警示狀態機）：`eval_video`，床位在 `labels/doll_video_slots.csv`、時間軸在 `labels/doll_video_labels.csv`（只列手不在畫面裡的片段；`label` 另有 `empty` 空床、`staged` 另有 `prone` 趴睡但口鼻看得到，都不算進誤報）。結果見 `docs/影片測試結果.md`。不給影片名稱會連台南 11/08 那 6 支一起跑；那批單獨用 `--fps 1` 計分（§3i）。
   - 每床鏡頭的床位情境（照護中暫停計時、空床灰燈，原型）：`crib_context`，讀 `eval_video` 存的每幀判定，空床參考在床位檔的 `empty_ref` 欄。結果見 `docs/影片測試結果.md` §3h。
   - VLM 複判（實驗，另一個虛擬環境 `.venv-vlm`）：`.venv-vlm/Scripts/python -m experiments.vlm_spike`，VLM 看床位檔 `head_x0..head_y1` 的床頭範圍。
   - 口鼻分類器（實驗，11/06）：`uv run python -m experiments.airway_crops` 存頭部特寫（先跑 `eval_video`）→ `.venv-vlm/Scripts/python -m experiments.airway_train` 訓練＋評估。**只能用 `hailo/prep_calib.py` 的 `SPLITS` 裡 calib 那一半訓練**；hold 只評估，門檻 0.5 不在 hold 上調。結果和失敗模式（側躺側臉判成看不到）見 `docs/architecture.md`「口鼻分類器」。
-  - 娃娃擺拍（測危險情境召回）：`eval_doll`，標註在 `labels/doll_labels.csv`。**計分單位是「每隻娃娃」**，不是每張照片——同框兩隻都危險、只抓到一隻時，用整張圖算會被判對。結果和失敗模式見 `docs/娃娃測試結果.md`。
+  - 娃娃擺拍（測危險情境召回）：`eval_doll`，標註在 `labels/doll_labels.csv`。**計分單位是「每隻娃娃」**，不是每張照片——同框兩隻都危險、只抓到一隻時，用整張圖算會被判對。結果和失敗模式見 `docs/娃娃測試結果.md`。基準是第 1–3 批（`--batch 1,2,3`）；第 4 批（台南 11/08）另外用 `--batch 4` 計分。
   - 灰階／暗光（模擬 IR 夜視，選跑）：三支都有 `--gray`、`--dim 0.3`（`evaluation/degrade.py`），結果另外放 `_<條件>` 的檔名／資料夾、不蓋掉原圖基準；SyRIP 用 `score_relabel --eval-dir outputs/syrip_eval_<條件>` 算。**灰階下口鼻膚色檢查（v4/v5）失效**，結果見 `docs/娃娃測試結果.md` §8。
 - **可以訓練模型（2026/11/05 起）**：原本為了省事只用現成、授權寬鬆的模型加上演算法設計；表現會更好就訓練或微調（例如 RTMO 量化掉太多時）。訓練資料的授權規定見 `docs/private/decisions.md`「技術與產品政策」：要允許商用，SyRIP、網路影像、評估用的資料都不能拿來訓練。
 

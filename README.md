@@ -17,7 +17,7 @@ SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges l
 | Part | Status |
 | --- | --- |
 | Per-crib pipeline: pose → face → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
-| Caregiving pause, empty-crib gray state | Prototype, tested on two per-crib doll clips |
+| Caregiving pause, empty-crib gray state | Prototype, tested on three per-crib doll clips (one is a normal pick-up) |
 | VLM second check (Qwen2-VL-2B) | Works as a laptop GPU experiment. Hailo's precompiled HEF also runs on the UGen300 (about 1 s per question, in the same process as the pipeline), but there it calls every side face "not visible", so it is **not usable on the chip yet** (see Hardware integration) |
 | Pose model (RTMO-m) on the Hailo-10H | **Runs on the UGen300 inside the pipeline.** Plain 8-bit quantization lost too much accuracy, so we retrained the network to tolerate 8-bit (quantization-aware training). On all three test sets the results match the original float model on the CPU |
 | YuNet face model on the Hailo-10H | **Runs on the UGen300 inside the pipeline** (set `FG_YUNET_HEF`). Its scores differ from OpenCV's by about 0.02, so a few faces near the threshold flip (slightly more false alerts than on the CPU). With YuNet on the chip the USB link drops now and then; with one thread it recovers by itself in 1–3 s (see Hardware integration) |
@@ -174,7 +174,8 @@ These are proxies: real infant photos taken at home, dolls, and simulations. The
 | Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
 | Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 31/41 danger segments caught (76%), 7/40 safe segments with a false alert; 5 FPS: 32/41 and 8/40 |
 | Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
-| Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts |
+| Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts. On a normal pick-up (11/08 batch) the light never turns red; the plain 3-second rule rang for about 49 s |
+| 11/08 batch: another doll at home, mostly dim (6 per-crib videos, 33 photos; also the classifier's training data) | Videos, 1 FPS: crib mode 5/9 danger segments caught, 1/15 false alerts; with the mouth-skin check (v4) 8/9 and 1/15. Misses are a cover over the mouth with the eyes showing. Photos: face-down 5/5, but a white collar over the mouth 0/5 even with v4 |
 | VLM second check (laptop GPU, 2 unseen clips) | Safe vs dangerous head crops AUC 0.98; found all 13 frames the detector missed, at the cost of 9 extra look requests on safe frames |
 | VLM second check on the UGen300 (same 2 clips) | Not usable yet: input fixed at 336×336 and no probabilities. On head crops it still finds all 13 missed frames but would ask for a look on 26 of 38 safe frames (all 21 side faces) |
 | Mouth/nose classifier (experiment; trained on one half of our doll footage, scored once on the other half) | Retrained on 11/09 with a new doll batch added (1,208 head crops): hidden airway 186/194 correct, visible 624/892 (AUC 0.951; first version 189/194, 601/892, 0.965). As a second check it flags 61/67 frames the detector missed; on the per-crib clip it asks for 10 extra looks on 228 safe frames. It still calls every side-lying side face of two dolls "not visible" (0/246 in one clip): in the training half those dolls show only frontal faces when the airway is clear, and the new doll's side faces did not carry over to them. On the VLM's 40 test frames: 3/24 extra looks (laptop VLM 5/24, chip VLM 16/24) |
@@ -203,11 +204,11 @@ The datasets are not in the repository (licensing and privacy): our doll photos 
 SyRIP from its authors. Results are written to `outputs/`.
 
 ```bash
-uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts
+uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts (no names = every labelled video, incl. the 11/08 batch)
 uv run python -m evaluation.eval_video --reuse --on 2  # recompute with another alert rule, no new detection
 uv run python -m evaluation.crib_context             # caregiving pause + empty crib (run eval_video first)
-uv run python -m evaluation.eval_doll --det-th 0.15  # doll photos, scored per doll
-uv run python -m evaluation.eval_doll --det-th 0.15 --batch 4   # only one shooting batch (the labels' batch column)
+uv run python -m evaluation.eval_doll --det-th 0.15 --batch 1,2,3   # doll photos, scored per doll (the 185-doll results above)
+uv run python -m evaluation.eval_doll --det-th 0.15 --batch 4       # the 11/08 batch (one care-training doll), reported separately
 uv run python -m evaluation.eval_syrip --face v3     # real infant photos (dataset/SyRIP_Posture.zip)
 uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels
 uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles
