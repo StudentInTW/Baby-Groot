@@ -48,8 +48,12 @@ from pipeline.infant_face_v3 import load_rtmo, make_persons
 
 OUT = ROOT / "hailo" / "calib"
 SPLITS = {
-    # 每床鏡頭的兩支（8429、8432）各放一邊；8429 比較長、有空床，留給比對
-    "calib": {"videos": ("IMG_8115", "IMG_8150", "IMG_8432"), "batches": ("2", "3")},
+    # 每床鏡頭的兩支（8429、8432）各放一邊；8429 比較長、有空床，留給比對。
+    # 11/08 台南那批（一隻照護娃娃、每床直拍：影片 IMG_8735–8744、照片第 4 批）整批放 calib；
+    # IMG_8743 每一幀都有手臂，沒有標註、不收。rtmo_D1.hef、yunet_A.hef 的校正圖是加這批之前做的。
+    "calib": {"videos": ("IMG_8115", "IMG_8150", "IMG_8432",
+                         "IMG_8735", "IMG_8739", "IMG_8740", "IMG_8741", "IMG_8742", "IMG_8744"),
+              "batches": ("2", "3", "4")},
     # 嬰兒翻身：AI 生成的灰階夜視俯拍，唯一像 IR 的畫面；授權（生成工具的條款）確認前只當比對用
     "hold": {"videos": ("IMG_8116", "IMG_8184", "IMG_8429", "嬰兒翻身"), "batches": ("1",)},
 }
