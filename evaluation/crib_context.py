@@ -54,6 +54,13 @@ def features(name, slot):
     return rows
 
 
+def saved_fps(path):
+    """eval_video 存的每幀判定大約是每秒幾幀（每幀時間間隔的中位數）。"""
+    times = sorted({float(r["t"]) for r in read_csv(path)})
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    return 1 / statistics.median(gaps) if gaps else FPS
+
+
 def run(name, ann):
     doll, slot = next(iter(ann["slots"].items()))
     frames = {float(r["t"]): r for r in read_csv(EVAL_DIR / f"{name}_frames.csv") if r["doll"] == doll}
@@ -138,7 +145,8 @@ def summarize(outs):
         prone = [r for o in outs for r in o["prone"]]
         empty = [r for o in outs for r in o["empty"]]
         reds = "、".join(f"{r[m]['red_secs']:.0f}" for r in empty) or "—"
-        print(f"  {title:<12} 危險抓到 {caught}/{len(danger)}（開始響的中位數 {statistics.median(lats):.1f} 秒；"
+        med = f"{statistics.median(lats):.1f} 秒" if lats else "—"     # 沒有危險片段（例如只拍正常抱走）時沒有中位數
+        print(f"  {title:<12} 危險抓到 {caught}/{len(danger)}（開始響的中位數 {med}；"
               f"危險片段被判成空床 {bad} 段）｜安全誤報 {sum(r[m]['red'] for r in safe)}/{len(safe)}"
               f"｜趴睡但口鼻看得到 {sum(r[m]['red'] for r in prone)}/{len(prone)} 響"
               f"｜空床結束時灰燈 {sum(r[m]['end_gray'] for r in empty)}/{len(empty)}（紅燈秒數 {reds}）")
@@ -191,6 +199,12 @@ def main():
         ann = anns[name]
         if len(ann["slots"]) != 1:
             print(f"[略過] {name} 一個畫面有 {len(ann['slots'])} 個床位；這支只處理每床鏡頭（一個畫面一張床）")
+            continue
+        path = EVAL_DIR / f"{name}_frames.csv"
+        if path.exists() and saved_fps(path) < FPS * 0.75:
+            # 例如用 eval_video --fps 1 跑的：時間只有五分之一對得上，紅燈秒數也會算錯
+            print(f"[略過] {name} 的每幀判定是每秒約 {saved_fps(path):.0f} 幀，這支要每秒 {FPS} 幀；"
+                  f"先用預設重跑：uv run python -m evaluation.eval_video {name}")
             continue
         rows = run(name, ann)
         out = score(name, ann, rows)
