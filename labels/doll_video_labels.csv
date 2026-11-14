@@ -7,12 +7,12 @@ IMG_8116,L,20,24,alert,danger,棉被蓋住口鼻
 IMG_8116,R,20,24,ok,safe,仰躺
 IMG_8116,L,30,34,alert,danger,棉被蓋到眼睛剩額頭
 IMG_8116,R,30,34,alert,danger,棉被蓋到眼睛剩額頭
-IMG_8116,L,44,48,alert,warn,側躺後腦勺朝鏡頭看不到口鼻
+IMG_8116,L,44,48,alert,unseen,側躺後腦勺朝鏡頭看不到口鼻
 IMG_8116,R,44,48,ok,safe,仰躺
 IMG_8116,L,56,60,alert,danger,趴睡臉朝下
 IMG_8116,R,56,60,ok,safe,仰躺
 IMG_8116,L,70,74,alert,danger,趴睡臉朝下
-IMG_8116,R,70,74,alert,warn,側躺後腦勺朝鏡頭看不到口鼻
+IMG_8116,R,70,74,alert,unseen,側躺後腦勺朝鏡頭看不到口鼻
 IMG_8116,L,80,84,alert,danger,趴睡臉朝下
 IMG_8116,R,80,84,alert,danger,趴睡臉朝下
 IMG_8116,L,90,92,alert,danger,趴睡被子蓋住剩後腦勺
@@ -20,9 +20,9 @@ IMG_8116,R,90,92,alert,danger,趴睡被子蓋住剩後腦勺
 IMG_8116,L,100,102,ok,safe,仰躺
 IMG_8116,R,100,102,alert,danger,趴睡臉朝下
 IMG_8116,L,112,116,ok,safe,仰躺
-IMG_8116,R,112,116,alert,warn,趴睡頭往側邊這個角度看不到口鼻
+IMG_8116,R,112,116,alert,unseen,趴睡頭往側邊這個角度看不到口鼻
 IMG_8116,L,126,130,alert,warn,趴在抱枕上頭擺側邊臉埋進抱枕
-IMG_8116,R,126,130,alert,warn,趴睡頭往側邊這個角度看不到口鼻
+IMG_8116,R,126,130,alert,unseen,趴睡頭往側邊這個角度看不到口鼻
 IMG_8150,L,2,6,ok,safe,仰躺
 IMG_8150,R,2,6,alert,danger,衣服遮住口鼻
 IMG_8150,L,12,16,ok,safe,仰躺
@@ -100,7 +100,7 @@ IMG_8735,S,70,80,alert,danger,棉被蓋住口鼻
 IMG_8739,S,3,18,ok,safe,仰躺
 IMG_8739,S,32,48,alert,danger,被單拉上來蓋住嘴，眼睛露出
 IMG_8739,S,55,66,ok,safe,拉開，仰躺
-IMG_8739,S,79,97,alert,warn,側躺朝右（本來要拍口鼻看得到），從鏡頭看不到口鼻
+IMG_8739,S,79,97,alert,unseen,側躺朝右（本來要拍口鼻看得到），從鏡頭看不到口鼻
 IMG_8739,S,104,130,alert,danger,包巾蓋住口鼻
 IMG_8740,S,3,20,alert,danger,趴睡、臉朝下
 IMG_8740,S,85,97,ok,safe,仰躺

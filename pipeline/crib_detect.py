@@ -60,6 +60,27 @@ def slot_faces(detector, frame, rect, rot, min_score=SLOT_FACE_TH):
     return faces
 
 
+def slot_pose(run_pose, slots):
+    """實驗（2026/11/13，eval_video --slot-rtmo）：RTMO 不看整張畫面，改成每個床位各裁一次給它，
+    框和關鍵點換回整張圖座標再合併（重複的人由 make_persons 合併）。
+    廣角鏡頭裡床只佔一角時，娃娃在 RTMO 的輸入裡會大好幾倍：場域測試的托嬰中心鏡頭「被子蓋到胸口」找到人 0% → 94%。
+    代價：每個床位多跑一次 RTMO；空床上會把床單當成人（判定仍是看不到，空床另外靠參考畫面判）。"""
+    def run(img):
+        h, w = img.shape[:2]
+        out = []
+        for x0, y0, x1, y1 in slots.values():
+            X0, Y0 = int(x0 * w), int(y0 * h)
+            for box, kpts in run_pose(img[Y0:int(y1 * h), X0:int(x1 * w)]):
+                box, kpts = box.copy(), kpts.copy()
+                box[[0, 2]] += X0
+                box[[1, 3]] += Y0
+                kpts[:, 0] += X0
+                kpts[:, 1] += Y0
+                out.append((box, kpts))
+        return out
+    return run
+
+
 def detect(run_pose, detector, det_v5, frame, slots, rots):
     """一幀：回傳每個床位在四種判定下的狀態，和畫圖用的偵測結果。
     狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人（只有 v3 會出現）。

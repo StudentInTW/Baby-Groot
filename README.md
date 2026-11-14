@@ -111,7 +111,7 @@ whether the face can be seen.
   | --- | --- | --- | --- |
   | Real infant photos (SyRIP, 700) | 97.7% found, 6.1% false alerts, 98.6% alerted when hidden | 99.0% found, 6.3% false alerts, 98.6% alerted | 99.0%, 7.1%\*, 97.3% |
   | Doll photos (185 dolls), crib mode | Alert recall 90.2%, false alerts 12.2% | 91.7%, 10.2% | 90.2%, 14.3% |
-  | Doll videos (6), crib mode, 5 FPS | 32/41 danger segments caught, 8/40 safe segments with a false alert | 33/41, 9/40 | 33/41, 10/40 |
+  | Doll videos (6), crib mode, 5 FPS | 30/37 danger segments caught, 8/40 safe segments with a false alert | 31/37, 9/40 | 31/37, 10/40 |
 
   Moving RTMO-m to the chip changes nothing beyond noise. Moving YuNet too costs a little: the four doll photos that
   flip are all faces scored near the 0.7 threshold (two extra false faces at 0.71 and 0.73, two real faces pushed just
@@ -172,10 +172,10 @@ These are proxies: real infant photos taken at home, dolls, and simulations. The
 | --- | --- |
 | Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found; 6.1% false alerts when the face is visible; 98.6% alerted when it is hidden |
 | Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
-| Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 31/41 danger segments caught (76%), 7/40 safe segments with a false alert; 5 FPS: 32/41 and 8/40 |
+| Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 29/37 danger segments caught (78%), 7/40 safe segments with a false alert; 5 FPS: 30/37 and 8/40. Four segments where the mouth and nose are uncovered but out of the camera's view (side-lying facing away, prone with the head turned) are listed apart and not scored; the system alerted on 2 of them |
 | Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
 | Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts. On a normal pick-up (11/08 batch) the light never turns red; the plain 3-second rule rang for about 49 s |
-| 11/08 batch: another doll at home, mostly dim (6 per-crib videos, 33 photos; also the classifier's training data) | Videos, 1 FPS: crib mode 5/9 danger segments caught, 1/15 false alerts; with the mouth-skin check (v4) 8/9 and 1/15. Misses are a cover over the mouth with the eyes showing. Photos: face-down 5/5, but a white collar over the mouth 0/5 even with v4 |
+| 11/08 batch: another doll at home, mostly dim (6 per-crib videos, 33 photos; also the classifier's training data) | Videos, 1 FPS: crib mode 4/8 danger segments caught, 1/15 false alerts; with the mouth-skin check (v4) 7/8 and 1/15 (one uncovered side-lying segment out of the camera's view is listed apart). Misses are a cover over the mouth with the eyes showing. Photos: face-down 5/5, but a white collar over the mouth 0/5 even with v4 |
 | VLM second check (laptop GPU, 2 unseen clips) | Safe vs dangerous head crops AUC 0.98; found all 13 frames the detector missed, at the cost of 9 extra look requests on safe frames |
 | VLM second check on the UGen300 (same 2 clips) | Not usable yet: input fixed at 336×336 and no probabilities. On head crops it still finds all 13 missed frames but would ask for a look on 26 of 38 safe frames (all 21 side faces) |
 | Mouth/nose classifier (experiment; trained on one half of our doll footage, scored once on the other half) | Retrained on 11/09 with a new doll batch added (1,208 head crops): hidden airway 186/194 correct, visible 624/892 (AUC 0.951; first version 189/194, 601/892, 0.965). As a second check it flags 61/67 frames the detector missed; on the per-crib clip it asks for 10 extra looks on 228 safe frames. It still calls every side-lying side face of two dolls "not visible" (0/246 in one clip): in the training half those dolls show only frontal faces when the airway is clear, and the new doll's side faces did not carry over to them. On the VLM's 40 test frames: 3/24 extra looks (laptop VLM 5/24, chip VLM 16/24) |
@@ -216,6 +216,18 @@ uv run python -m evaluation.bench_multistream        # CPU throughput: how many 
 
 Add `--gray` and/or `--dim 0.3` to `eval_video`, `eval_doll` or `eval_syrip` to simulate an IR night view; those results go
 to separate folders.
+
+Two video experiments for wide-angle daycare cameras, where a crib is only a corner of the picture:
+`eval_video --slot-rtmo` runs the pose model on each crib crop instead of the whole frame, and `evaluation.cctv_sim`
+turns our doll videos into simulated CCTV footage (face shrunk to the size a wide-angle camera sees, placed in a 1080p frame,
+CCTV-like tone and sharpening, H.264 compression; the settings were matched to a field recording of a doll). `cctv_sim` needs
+ffmpeg, which `uv run --with imageio-ffmpeg` provides without changing the project environment:
+
+```bash
+uv run python -m evaluation.eval_video --slot-rtmo                     # results in outputs/video_eval_slotrtmo/
+uv run --with imageio-ffmpeg python -m evaluation.cctv_sim render --preset daycare IMG_8735   # outputs/cctv_sim/daycare/
+uv run python -m evaluation.eval_video IMG_8735 --cctv daycare --fps 1    # results in outputs/video_eval_cctv-daycare/
+```
 
 ### Demo
 
@@ -306,7 +318,7 @@ pipeline/       the per-crib pipeline (the part that runs on the edge box)
   face_common.py      thresholds, YuNet face search, matching faces to people, drawing
   crib_detect.py      one frame: is the face visible in each crib (crib mode)
   crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib
-evaluation/     evaluation scripts and their helpers (label loading, simulated night view)
+evaluation/     evaluation scripts and their helpers (label loading, simulated night view, simulated CCTV footage)
 demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
 experiments/    earlier versions (v1, v2) and exploratory spikes kept for comparison, including the VLM second check
                 (vlm_spike.py) and the mouth/nose classifier (airway_crops.py, airway_train.py)
