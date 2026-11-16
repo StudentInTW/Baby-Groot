@@ -208,6 +208,16 @@ class Hef:
         return False
 
 
+def open_hef(path, batch=1):
+    """主流程拿模型用這個：設了 FG_CHIP_PROCESS=1 就把晶片放在另一個程序（chip_process.RemoteHef，卡死時可以整個重開），
+    沒設就是同一個程序裡的 Hef（跟以前一樣）。"""
+    import os
+    if os.environ.get("FG_CHIP_PROCESS") == "1":
+        from hailo.chip_process import RemoteHef
+        return RemoteHef(path, batch)
+    return Hef(path, batch)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("hef", type=Path)

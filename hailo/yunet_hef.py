@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hailo.hailo_infer import Hef
+from hailo.hailo_infer import open_hef
 from hailo.yunet_decode import NMS_TH, SIZE, STRIDES, TOP_K, decode, nms, pad_to
 
 OVERLAP = 160
@@ -33,7 +33,7 @@ class _Runner:
     """一顆 YuNet HEF（同一個路徑共用一份）：把輸出對應到 yunet_decode 用的名稱，記住上一張圖的結果。"""
 
     def __init__(self, path):
-        self.chip = Hef(path)
+        self.chip = open_hef(path)   # FG_CHIP_PROCESS=1 時晶片在另一個程序
         self.roles = []
         for name, shape in self.chip.outputs:
             ch, n = shape[-1], int(np.prod(shape[:-1]))

@@ -69,10 +69,10 @@ def load_rtmo():
         raise SystemExit(f"{RTMO_HEF_ENV} 和 {RTMO_ONNX_ENV} 只能設一個")
     if hef:
         from rtmlib import Body
-        from hailo.hailo_infer import Hef
+        from hailo.hailo_infer import open_hef
         from hailo.rtmo_post import Post
         rtmo = Body(pose="rtmo", mode="balanced", backend="onnxruntime", device="cpu").pose_model   # 只借它的前處理和 nms_thr
-        chip, post = Hef(Path(hef).resolve()), Post()
+        chip, post = open_hef(Path(hef).resolve()), Post()   # FG_CHIP_PROCESS=1 時晶片在另一個程序
 
         def inference(x):
             """x：rtmlib 前處理後的 640×640×3 uint8（等比例縮放、補 114、BGR）→ 跟 ONNX 一樣的 dets、keypoints。"""
