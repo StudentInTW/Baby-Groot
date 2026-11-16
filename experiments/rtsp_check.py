@@ -19,7 +19,8 @@ rtsp_check.py
 視窗裡的按鍵（標「現在擺的是什麼」，寫進 CSV；換擺法時手還在畫面裡就先按 0）：
     0 排除（有人在擺、畫面有人）  1 空床  2 仰躺、不蓋東西  3 側躺、不蓋東西（口鼻看不看得到之後對照畫面標）  4 趴睡、臉朝下
     5 仰躺、被子蓋過口鼻（眼睛露出）  6 仰躺、被子蓋到胸口（臉露出）  7 仰躺、被子蓋住整張臉
-    8 仰躺、被子蓋到胸口、頭轉側邊（側臉）  q／Esc 結束
+    8 仰躺、被子蓋到胸口、頭轉側邊（側臉）  9 仰躺、小方巾在臉旁邊（口鼻露出）  c 仰躺、小方巾蓋住口鼻（眼睛露出）
+    q／Esc 結束
 輸出：outputs/field/<日期>/<name>_<時間>.csv（每次判讀一列）、.txt（結果摘要）、--record 時另存 .mp4（每秒 5 幀的原始畫面）。
 --channels：網址裡的第幾路（/h264/chN/ 或 /Streaming/Channels/N02）會自動換成每一路；量每路實際 fps、斷線、總頻寬、CPU，
 寫到 outputs/field/<日期>/<name>_multi<路數>_<時間>.txt。回答「一台主機同時從 DVR 讀幾路撐得住」（判讀的運算量另外看 bench_multistream）。
@@ -56,6 +57,9 @@ LABELS = {  # 按鍵 → (英文，畫面用；中文，CSV 用；應該的判�
     "6": ("supine, blanket to chest", "仰躺、被子蓋到胸口（臉露出）", "visible"),
     "7": ("supine, whole face covered", "仰躺、被子蓋住整張臉", "hidden"),
     "8": ("supine, blanket to chest, head turned", "仰躺、被子蓋到胸口、頭轉側邊（側臉）", "visible"),
+    # 2026/11/15 加：嬰兒室常見臉旁邊放一條小方巾（第二間月子中心的畫面）
+    "9": ("supine, cloth beside face", "仰躺、小方巾在臉旁邊（口鼻露出）", "visible"),
+    "c": ("supine, cloth over mouth+nose", "仰躺、小方巾蓋住口鼻（眼睛露出）", "hidden"),
 }
 
 
@@ -209,7 +213,7 @@ def draw(frame, slot, out, key):
             cv2.rectangle(frame, b[:2], b[2:], (255, 255, 255), th)  # 找到的臉：白
     s = min(VIEW_W / w, VIEW_H / h)
     view = cv2.resize(frame, (round(w * s), round(h * s)))
-    lines = [f"[{key}] {LABELS[key][0]}" if key else "[no label] press 0-8"]
+    lines = [f"[{key}] {LABELS[key][0]}" if key else "[no label] press 0-9 or c"]
     color = (200, 200, 200)
     if out:
         ok = out["verdict"] == "visible"
