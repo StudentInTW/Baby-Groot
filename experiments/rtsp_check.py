@@ -7,6 +7,7 @@ rtsp_check.py
 串流網址含帳密，放環境變數，不要寫進檔案：
     PowerShell:  $env:FG_RTSP = "rtsp://帳號:密碼@IP:埠/h264/ch4/main/av_stream"
     （海康舊款：/h264/chN/main|sub/av_stream；新款：/Streaming/Channels/N01（主）、N02（子）；
+      大華（DJS 等貼牌）：/cam/realmonitor?channel=N&subtype=0（主）或 1（子）；
       密碼裡有 @ # : % 這類符號要改成 %40 %23 %3A %25）
 
     uv run python -m experiments.rtsp_check                         # 只量連線 10 秒，不開視窗
@@ -103,7 +104,10 @@ def channel_url(url, ch):
     new, n = re.subn(r"/Channels/\d+?(0[12])$", lambda m: f"/Channels/{ch}{m.group(1)}", url)
     if n:
         return new
-    raise SystemExit("網址裡找不到第幾路（/chN/ 或 /Channels/N02），請在那個位置寫 {ch}")
+    new, n = re.subn(r"([?&]channel=)\d+", lambda m: f"{m.group(1)}{ch}", url)   # 大華（含 DJS 這類貼牌）
+    if n:
+        return new
+    raise SystemExit("網址裡找不到第幾路（/chN/、/Channels/N02 或 channel=N），請在那個位置寫 {ch}")
 
 
 def parse_channels(spec):
@@ -163,7 +167,7 @@ def run_multi(url, chans, seconds, name):
     print(f"→ {out}")
 
 
-def make_infer(slot, rot):
+def make_infer(slot, rot, mode="v3_slot"):
     """載入 RTMO 和 YuNet，回傳 infer(frame) → 這一幀的判讀結果（dict）。"""
     from pipeline import crib_detect, infant_face_v3, infant_face_v5
     from pipeline.face_common import FACE_SCORE_TH, create_face_detector
@@ -181,7 +185,8 @@ def make_infer(slot, rot):
         boxes = [tuple(int(v) for v in f[:4]) for f in faces]
         in_slot = [b for b in boxes if x0 * w <= (b[0] + b[2]) / 2 <= x1 * w and y0 * h <= (b[1] + b[3]) / 2 <= y1 * h]
         r = res["S"]
-        return {"verdict": r["v3_slot"], "v3_person": r["v3"], "persons": len(persons), "persons_in_slot": r["persons"],
+        return {"verdict": r[mode], "v3_slot": r["v3_slot"], "v4_slot": r["v4_slot"], "v5_tier": r["v5_tier"],
+                "mouth_skin": r["mouth_skin"], "v3_person": r["v3"], "persons": len(persons), "persons_in_slot": r["persons"],
                 "faces_in_slot": len(in_slot), "face_px": max((b[2] - b[0] for b in in_slot), default=0),
                 "face_scores": r["slot_face_scores"], "ms": ms,
                 "person_boxes": [tuple(int(v) for v in p["box"][:4]) for p in persons], "face_boxes": boxes}
@@ -218,8 +223,14 @@ def draw(frame, slot, out, key):
     if out:
         ok = out["verdict"] == "visible"
         color = (50, 160, 46) if ok else (32, 45, 217)
+        text = f"crib ({out['mode']}): mouth/nose {'visible' if ok else 'NOT visible'}"
+        if out["mode"] == "v5_slot":   # v5 分三級：側臉（口鼻不確定）是黃色「提醒」
+            tier = out["v5_tier"]
+            color = {"ok": (50, 160, 46), "warn": (0, 190, 255)}.get(tier, (32, 45, 217))
+            text = {"ok": "crib (v5): OK - face visible", "warn": "crib (v5): CHECK - side face, mouth/nose unsure"
+                    }.get(tier, "crib (v5): ALERT - mouth/nose NOT visible")
         cv2.rectangle(view, (0, 0), (view.shape[1] - 1, view.shape[0] - 1), color, 8)
-        lines.append(f"crib: mouth/nose {'visible' if ok else 'NOT visible'}")
+        lines.append(text)
         lines.append(f"persons {out['persons']} (in crib {out['persons_in_slot']})  face {out['face_px']}px  "
                      f"{out['ms']:.0f} ms")
     fs = 0.8 if view.shape[1] >= 800 else 0.5  # 直式影片的視窗比較窄，字要小一點才放得下
@@ -258,6 +269,8 @@ def main():
     ap.add_argument("--name", default="cam", help="檔名開頭，例如 cam04_main")
     ap.add_argument("--label", default=None, choices=list(LABELS), help="一開始的擺法（不開視窗時用）")
     ap.add_argument("--record", action="store_true", help="另存判讀用的原始畫面（只在畫面裡只有娃娃時用）")
+    ap.add_argument("--mode", default="v3_slot", choices=["v3_slot", "v4_slot", "v5_slot"],
+                    help="畫面和摘要用哪一種判定（預設 v3；v4 多檢查口鼻是不是膚色，擋只露眼睛的假臉）。CSV 三種都記")
     ap.add_argument("--no-window", action="store_true", help="判讀但不開視窗，跑 --seconds 秒")
     ap.add_argument("--channels", help="同時讀很多路（只解碼），例如 1-16、1-4、1,3,5")
     args = ap.parse_args()
@@ -293,12 +306,12 @@ def main():
         day = OUT_ROOT / stamp.strftime("%Y%m%d")
         day.mkdir(parents=True, exist_ok=True)
         stem = day / f"{args.name}_{stamp.strftime('%H%M%S')}"
-        infer = make_infer(slot, args.rot)
+        infer = make_infer(slot, args.rot, args.mode)
         log = open(f"{stem}.csv", "w", newline="", encoding="utf-8-sig")
         writer = csv.writer(log)
         writer.writerow(["clock", "t", "key", "label", "verdict", "v3_person", "persons", "persons_in_slot",
                          "faces_in_slot", "face_px", "face_scores", "ms", "stream", "width", "height", "slot", "rot",
-                         "rtmo_hef"])
+                         "rtmo_hef", "mode", "v3_slot", "v4_slot", "v5_tier", "mouth_skin"])
         if args.record:
             rec = cv2.VideoWriter(f"{stem}.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 1 / INFER_EVERY,
                                   (first.shape[1], first.shape[0]))
@@ -317,13 +330,15 @@ def main():
             if rec is not None:
                 rec.write(frame)
             out = infer(frame)
+            out["mode"] = args.mode
             row = {"key": key, **{k: out[k] for k in ("verdict", "persons_in_slot", "face_px", "ms")}}
             rows.append(row)
             writer.writerow([datetime.now().strftime("%H:%M:%S.%f")[:-3], f"{last_inf - t_start:.2f}", key or "",
                              LABELS[key][1] if key else "", out["verdict"], out["v3_person"], out["persons"],
                              out["persons_in_slot"], out["faces_in_slot"], out["face_px"], out["face_scores"],
                              f"{out['ms']:.0f}", host, frame.shape[1], frame.shape[0],
-                             ",".join(f"{v:g}" for v in slot), args.rot, os.environ.get("FG_RTMO_HEF", "")])
+                             ",".join(f"{v:g}" for v in slot), args.rot, os.environ.get("FG_RTMO_HEF", ""),
+                             args.mode, out["v3_slot"], out["v4_slot"], out["v5_tier"], out["mouth_skin"]])
         if not window:
             time.sleep(0.02)
             continue

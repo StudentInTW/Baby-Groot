@@ -13,6 +13,7 @@ airway_crops.py
   calib（可以訓練）：影片 IMG_8115、IMG_8150、IMG_8432；照片第 2、3 批；
                      11/08 台南那批：影片 IMG_8735、8739、8740、8741、8742、8744，照片第 4 批
   hold（只能評估）：影片 IMG_8116、IMG_8184、IMG_8429；照片第 1 批
+  （11/17 加）calib 多了隊友拍的 5 支「寶寶1…」；另外一組 field（只能評估）：第二間月子中心 308 床的每床鏡頭錄影 3 支
   AI 生成的嬰兒翻身.mp4 不用；SyRIP、網路影片不能拿來訓練。
 標籤：
   照片：labels/doll_labels.csv 每隻娃娃的 label（ok＝看得到、alert＝看不到；partial 不用），
@@ -124,7 +125,8 @@ def main():
 
         # 影片：乾淨片段每秒 --fps 幀
         for video in spec["videos"]:
-            if video not in annotations or annotations[video]["local"] or video == "嬰兒翻身":
+            # local 標註（網路影片）不收；field 那一組是自己的場域錄影、標註只是不公開，照收（只評估）
+            if video not in annotations or (annotations[video]["local"] and half != "field") or video == "嬰兒翻身":
                 continue
             ann, slots3 = annotations[video], v3_slots(video)
             cap = cv2.VideoCapture(str(video_labels.find_video(video)))
