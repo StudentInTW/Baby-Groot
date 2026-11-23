@@ -315,8 +315,10 @@ def summarize(rows, th, where="RTX 3050 4GB、語言模型 4-bit"):
         "安全：側臉口鼻看得到": lambda r: r["label"] == "ok" and "側" in r["note"] and not r["prone_gt"],
         "趴睡但臉側向、口鼻看得到": lambda r: r["label"] == "ok" and r["prone_gt"],
         "危險：被子／衣服／玩偶蓋住": lambda r: r["label"] == "alert" and not r["prone_gt"] and r["staged"] == "danger",
-        "危險：趴睡臉朝下／埋抱枕": lambda r: r["label"] == "alert" and r["prone_gt"],
-        "看不到：側躺後腦勺朝鏡頭": lambda r: r["label"] == "alert" and r["staged"] == "warn" and not r["prone_gt"],
+        "危險：趴睡臉朝下／埋抱枕": lambda r: r["label"] == "alert" and r["prone_gt"] and r["staged"] != "unseen",
+        # 口鼻沒被蓋、但鏡頭看不到（staged unseen，2026/11/14 起另外列）：側躺後腦勺朝鏡頭、趴睡頭往側邊
+        "看不到：口鼻沒蓋、鏡頭看不到": lambda r: r["label"] == "alert" and r["staged"] in ("warn", "unseen")
+                                       and not (r["prone_gt"] and r["staged"] == "warn"),
     }
     for title, cond in groups.items():
         rs = [r for r in doll if cond(r)]

@@ -87,7 +87,7 @@ def score(name, ann, rows):
     def at(seg):
         return [r for r in rows if seg["start"] <= r["t"] <= seg["end"]]
 
-    out = {"danger": [], "safe": [], "prone": [], "empty": [], "gap_care": None}
+    out = {"danger": [], "unseen": [], "safe": [], "prone": [], "empty": [], "gap_care": None}
     for seg in ann["segments"]:
         rs = at(seg)
         if not rs:
@@ -104,7 +104,10 @@ def score(name, ann, rows):
                           "gray": sum(r[m] == "empty" for r in late) / max(len(late), 1),
                           "end_gray": rs[-1][m] == "empty", "red_before": rs[0][m] == "alert",
                           "red_secs": sum(r[m] == "alert" for r in rs) / FPS}
-        kind = {"alert": "danger", "empty": "empty"}.get(seg["label"], "prone" if seg["staged"] == "prone" else "safe")
+        if seg["label"] == "alert":  # 口鼻沒被蓋、但鏡頭看不到（staged unseen）不算危險，另外列
+            kind = "unseen" if seg["staged"] == "unseen" else "danger"
+        else:
+            kind = "empty" if seg["label"] == "empty" else ("prone" if seg["staged"] == "prone" else "safe")
         out[kind].append(res)
     gap = [r for r in rows if r["gt"] == ""]
     out["gap_care"] = sum(r["context"] == "care" for r in gap) / max(len(gap), 1)
@@ -115,15 +118,17 @@ def score(name, ann, rows):
 
 def report(name, out):
     print(f"\n== {name}")
-    for kind, title in (("danger", "危險"), ("safe", "安全"), ("prone", "趴睡但口鼻看得到"), ("empty", "空床")):
+    for kind, title in (("danger", "危險"), ("unseen", "口鼻沒蓋看不到"), ("safe", "安全"), ("prone", "趴睡但口鼻看得到"),
+                        ("empty", "空床")):
         for res in out[kind]:
             s = res["seg"]
             cells = []
             for m in ("base", "context"):
                 x = res[m]
-                if kind == "danger":
+                if kind in ("danger", "unseen"):
                     lat = "—" if x["latency"] is None else f"{x['latency']:.1f}s 響"
-                    cells.append(f"{'抓到' if x['caught'] else '漏掉'}（{lat}"
+                    hit = ("抓到" if x["caught"] else "漏掉") if kind == "danger" else ("有響" if x["caught"] else "沒響")
+                    cells.append(f"{hit}（{lat}"
                                  + (f"，{x['empty_frames']} 幀判成空床！" if x["empty_frames"] else "") + "）")
                 elif kind == "empty":
                     cells.append(f"紅燈 {x['red_secs']:.0f} 秒" + ("（之前就在響）" if x["red_before"] else "")
@@ -144,10 +149,12 @@ def summarize(outs):
         safe = [r for o in outs for r in o["safe"]]
         prone = [r for o in outs for r in o["prone"]]
         empty = [r for o in outs for r in o["empty"]]
+        unseen = [r for o in outs for r in o.get("unseen", [])]
         reds = "、".join(f"{r[m]['red_secs']:.0f}" for r in empty) or "—"
         med = f"{statistics.median(lats):.1f} 秒" if lats else "—"     # 沒有危險片段（例如只拍正常抱走）時沒有中位數
+        unseen_txt = f"｜口鼻沒蓋、鏡頭看不到 {sum(r[m]['caught'] for r in unseen)}/{len(unseen)} 響" if unseen else ""
         print(f"  {title:<12} 危險抓到 {caught}/{len(danger)}（開始響的中位數 {med}；"
-              f"危險片段被判成空床 {bad} 段）｜安全誤報 {sum(r[m]['red'] for r in safe)}/{len(safe)}"
+              f"危險片段被判成空床 {bad} 段）{unseen_txt}｜安全誤報 {sum(r[m]['red'] for r in safe)}/{len(safe)}"
               f"｜趴睡但口鼻看得到 {sum(r[m]['red'] for r in prone)}/{len(prone)} 響"
               f"｜空床結束時灰燈 {sum(r[m]['end_gray'] for r in empty)}/{len(empty)}（紅燈秒數 {reds}）")
 

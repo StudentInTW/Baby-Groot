@@ -12,7 +12,8 @@ video_labels.py
            head_x0, head_y0, head_x1, head_y1（床頭那一端，VLM 看這裡；空白＝用床位範圍）,
            empty_ref（空床參考畫面在影片第幾秒，crib_context.py 用；空白＝沒有）, note
 時間軸欄位：video, doll, start, end（秒）, label（ok 口鼻看得到／alert 看不到／empty 空床）,
-           staged（拍攝意圖：safe／warn／danger／prone＝趴睡但口鼻看得到）, note
+           staged（拍攝意圖：safe／warn／danger／prone＝趴睡但口鼻看得到／
+                   unseen＝口鼻沒被蓋、但鏡頭看不到，跟 label alert 一起用，計分時另外列）, note
 """
 
 import csv

@@ -11,6 +11,8 @@ eval_video.py
                          手在擺娃娃的過渡期不計分（label 意義同 doll_labels.csv：ok 口鼻看得到／alert 看不到；
                          empty 空床——寶寶被抱走，系統不該響）。staged＝prone 是「趴睡但口鼻看得到」：
                          政策上要警示、但口鼻判定本來就抓不到，另外列，不算進誤報。
+                         label＝alert 加 staged＝unseen 是「口鼻沒被蓋、但鏡頭看不到」（例如側躺背對鏡頭）：
+                         不算危險也不算安全，另外列「有響幾段」（2026/11/14 Harry 決定）。
 
 比較四種判定（v3、v3＋床位、v4＋床位、v5＋床位；每幀的判定在 pipeline/crib_detect.py）。
 警示規則（pipeline/crib_state.py 的 AlertState）：每個床位各自一個狀態機，連續 --on 秒看不到 → 警示；連續 --off 秒看得到 → 解除；
@@ -22,6 +24,7 @@ eval_video.py
     uv run python -m evaluation.eval_video 嬰兒翻身          # 非娃娃的影片（NOT_DOLL、local 標註）要指定名稱才跑
     uv run python -m evaluation.eval_video --reuse          # 不重跑偵測，用上次存的每幀結果重算（改 --on/--off 時用）
     uv run python -m evaluation.eval_video --gray --dim 0.3 # 模擬補光不夠的 IR 夜視（見 degrade.py）
+    uv run python -m evaluation.eval_video --cctv daycare   # 跑做成「像托嬰監視器拍的」影片（先用 cctv_sim.py render 做好）
 輸出：outputs/video_eval/<影片>_frames.csv（每幀判定）、<影片>_timeline.png（時間軸對照圖）、
       <影片>_preview.mp4（標註影片，縮小版）；--gray/--dim 的結果放 outputs/video_eval_<條件>/
 """
@@ -38,11 +41,11 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from evaluation import video_labels
+from evaluation import cctv_sim, video_labels
 from evaluation.degrade import degrade, describe, tag
 from evaluation.video_labels import read_csv
 from pipeline import infant_face_v3, infant_face_v4, infant_face_v5
-from pipeline.crib_detect import MODES, detect
+from pipeline.crib_detect import MODES, detect, slot_pose
 from pipeline.crib_state import AlertState
 from pipeline.face_common import FACE_SCORE_TH, GREEN, RED, YELLOW, create_face_detector, put_label
 from pipeline.infant_face_v3 import load_rtmo, rtmo_tag
@@ -119,7 +122,7 @@ def report(name, results, on, off, blip):
         for m in MODES:
             x = r[m]
             if s["label"] == "alert":
-                txt = "抓到" if x["caught"] else "漏掉"
+                txt = ("有響" if x["caught"] else "沒響") if s["staged"] == "unseen" else ("抓到" if x["caught"] else "漏掉")
             else:
                 txt = "—" if x["false_alert"] is None else ("誤報" if x["false_alert"] else "正常")
             cells.append(f"{txt}（{x['hidden']:.0%}）")
@@ -132,7 +135,8 @@ def report(name, results, on, off, blip):
 def summarize(results, title=None):
     if title:
         print(f"\n{'=' * 78}\n== {title}")
-    danger = [r for r in results if r["seg"]["label"] == "alert"]
+    danger = [r for r in results if r["seg"]["label"] == "alert" and r["seg"]["staged"] != "unseen"]
+    unseen = [r for r in results if r["seg"]["label"] == "alert" and r["seg"]["staged"] == "unseen"]
     safe = [r for r in results if r["seg"]["label"] == "ok" and r["seg"]["staged"] != "prone"]
     prone = [r for r in results if r["seg"]["label"] == "ok" and r["seg"]["staged"] == "prone"]
     empty = [r for r in results if r["seg"]["label"] == "empty"]
@@ -141,8 +145,11 @@ def summarize(results, title=None):
         cover = sum(r[m]["coverage"] for r in danger) / max(len(danger), 1)
         scored = [r for r in safe if r[m]["false_alert"] is not None]
         fa = sum(r[m]["false_alert"] for r in scored)
-        extra = "".join(f"｜{name} {sum(bool(r[m]['false_alert']) for r in segs)}/{len(segs)} 有響"
-                        for name, segs in (("趴睡但口鼻看得到", prone), ("空床", empty)) if segs)
+        # 另外列的段落：口鼻沒蓋、鏡頭看不到（label alert）看結束時還在不在響；趴睡和空床（label 不是 alert）看扣掉開頭後有沒有響
+        extra = "".join(f"｜{name} {n}/{len(segs)} 有響" for name, segs, n in (
+            ("口鼻沒蓋、鏡頭看不到", unseen, sum(bool(r[m]["caught"]) for r in unseen)),
+            ("趴睡但口鼻看得到", prone, sum(bool(r[m]["false_alert"]) for r in prone)),
+            ("空床", empty, sum(bool(r[m]["false_alert"]) for r in empty))) if segs)
         print(f"    {MODE_NAMES[m]:<8} 危險片段抓到 {len(caught)}/{len(danger)}（{len(caught) / max(len(danger), 1):.0%}，"
               f"危險時間裡有 {cover:.0%} 在警示）｜安全片段誤報 {fa}/{len(scored)}{extra}")
 
@@ -160,7 +167,8 @@ def draw_timeline(name, rows, alerts, segments, duration, out_path):
         cv2.line(img, (x, 40), (x, H - 30), (225, 225, 225), 1)
         cv2.putText(img, f"{t // 60}:{t % 60:02d}", (x - 16, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (80, 80, 80), 1)
     cv2.putText(img, f"{name}  (green = mouth/nose visible, red = not visible / alert, gray = no person, "
-                     f"blank GT = hands in frame, not scored)", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
+                     f"purple GT = not covered but out of view, blank GT = hands in frame, not scored)",
+                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
     y = 50
     colors = {"ok": (80, 180, 80), "alert": (60, 60, 220), "partial": (0, 170, 255), "empty": (170, 170, 170)}
     for doll in dolls:
@@ -169,7 +177,8 @@ def draw_timeline(name, rows, alerts, segments, duration, out_path):
         cv2.putText(img, "GT", (10, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         for s in segments:
             if s["doll"] == doll:
-                cv2.rectangle(img, (xs(s["start"]), y + 3), (xs(s["end"]), y + row_h - 3), colors[s["label"]], -1)
+                c = (190, 120, 160) if s["staged"] == "unseen" else colors[s["label"]]  # 口鼻沒蓋、鏡頭看不到：紫色
+                cv2.rectangle(img, (xs(s["start"]), y + 3), (xs(s["end"]), y + row_h - 3), c, -1)
         y += row_h
         rs = sorted((r for r in rows if r["doll"] == doll), key=lambda r: r["t"])
         for m in MODES:
@@ -215,11 +224,16 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
 
 def run_video(name, ann, args, run_pose, detector, det_v5):
     """逐幀偵測（每秒 --fps 幀），存每幀結果和標註影片。回傳 rows、影片長度。"""
-    cap = cv2.VideoCapture(str(video_labels.find_video(name)))
+    path = video_labels.find_video(name)
+    slots, rots, segments = ann["slots"], ann["rot"], ann["segments"]
+    if args.cctv:  # 做好的模擬監視器影片：畫面縮小擺到 1920×1080 裡，床位座標跟著換（時間軸不變）
+        path, slots = cctv_sim.load_rendered(args.cctv, name)
+    cap = cv2.VideoCapture(str(path))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     step = max(1, round(src_fps / args.fps))
-    slots, rots, segments = ann["slots"], ann["rot"], ann["segments"]
+    if args.slot_rtmo:
+        run_pose = slot_pose(run_pose, slots)
     writer, rows, i, t0 = None, [], 0, time.perf_counter()
     live = {d: AlertState(args.on, args.off, args.blip) for d in slots}  # 標註影片的床位框顏色（--preview 選的判定）
     while True:
@@ -271,15 +285,21 @@ def main():
                     help="標註影片的床位框顏色依哪一種判定（預設 v3_slot；v4 還沒通過真實嬰兒的誤報測試）")
     ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
     ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
+    ap.add_argument("--slot-rtmo", action="store_true",
+                    help="實驗：RTMO 只看各床位的裁切（crib_detect.slot_pose），結果放 outputs/video_eval_slotrtmo/")
+    ap.add_argument("--cctv", choices=cctv_sim.PRESETS,
+                    help="改跑模擬監視器畫質的影片（cctv_sim.py），結果放 outputs/video_eval_cctv-<條件>/")
     args = ap.parse_args()
 
     infant_face_v3.DET_TH = args.det_th
     videos = load_annotations()
     names = args.videos or sorted(v for v, a in videos.items() if v not in NOT_DOLL and not a["local"])
-    cond = "_".join(filter(None, [tag(args.gray, args.dim), rtmo_tag()]))  # 灰階／關燈、換了 RTMO 模型的結果另外放
+    cond = "_".join(filter(None, [tag(args.gray, args.dim), rtmo_tag(),  # 灰階／關燈、換了 RTMO 模型的結果另外放
+                                  "slotrtmo" if args.slot_rtmo else "",
+                                  f"cctv-{args.cctv}" if args.cctv else ""]))
     args.out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"影像條件：{describe(args.gray, args.dim)}")
+    print(f"影像條件：{describe(args.gray, args.dim)}" + (f"｜模擬監視器 {args.cctv}" if args.cctv else ""))
     run_pose = detector = det_v5 = None
     all_results = []
     for name in names:

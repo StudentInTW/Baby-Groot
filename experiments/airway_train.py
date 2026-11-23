@@ -184,18 +184,66 @@ def vlm_compare(model, device):
             second_check(f"{name}（{th}）", rows, [p - th + TH for p in ps])
 
 
+FIELD_KINDS = (  # 場域那一組依「該給的燈」分；中心 11/17 的說法：純側躺看得到口鼻不提醒，微朝下看不到口鼻要提醒
+    ("看得到・正臉（綠）", lambda r: r["label"] == "ok" and "側" not in r["note"]),
+    ("看得到・側臉（綠，中心：不提醒）", lambda r: r["label"] == "ok" and "側" in r["note"]),
+    ("沒被蓋但看不到（黃，中心：要提醒）", lambda r: r["label"] == "alert" and r["staged"] == "unseen"),
+    ("被蓋住／趴睡（紅）", lambda r: r["label"] == "alert" and r["staged"] != "unseen"),
+)
+
+
+def field_report(model, field, device, suffix):
+    """場域那一組（只評估）：每支影片、每種該給的燈各判對幾幀，加上當第二道檢查的結果。"""
+    probs = predict(model, items_of(field), device)
+    with open(AIR / f"field_pred{suffix}.csv", "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["name", "group", "t", "label", "staged", "note", "v3_slot", "p_visible"])
+        writer.writeheader()
+        for r, p in zip(field, probs):
+            writer.writerow({k: r[k] for k in ("name", "group", "t", "label", "staged", "note", "v3_slot")}
+                            | {"p_visible": round(p, 4)})
+    print(f"\n== field（場域：月子中心每床鏡頭、沒看過的娃娃；只評估，門檻 {TH}）")
+    for g in sorted({r["group"] for r in field}):
+        idx = [i for i, r in enumerate(field) if r["group"] == g]
+        report(g, [field[i] for i in idx], [probs[i] for i in idx])
+    report("合計", field, probs)
+    print("  依該給的燈（分類器說看得到＝綠；說看不到＝提醒或警示）：")
+    for name, cond in FIELD_KINDS:
+        ps = [p for r, p in zip(field, probs) if cond(r)]
+        if ps:
+            want_vis = name.startswith("看得到")
+            right = sum((p >= TH) == want_vis for p in ps)
+            print(f"    {name:<24} 判對 {right}/{len(ps)}（{right / len(ps):.0%}），機率中位數 {np.median(ps):.2f}")
+    print("  當第二道檢查（偵測器 v3＋床位 判看得到的幀）：")
+    second_check("口鼻分類器", field, probs)
+    shown = [(r, p) for r, p in zip(field, probs) if r["v3_slot"] == "visible"]
+    for name, cond in FIELD_KINDS[2:]:
+        ps = [p for r, p in shown if cond(r)]
+        if ps:
+            print(f"    偵測器漏掉的「{name}」補到 {sum(p < TH for p in ps)}/{len(ps)}")
+    n_none = Counter((r["group"], r["label"]) for r in read_csv(AIR / "crops.csv") if r["half"] == "field" and not r["crop"])
+    if n_none:
+        print(f"  找不到人、沒有頭部特寫的幀（交給偵測器）：{dict(n_none)}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-cv", action="store_true", help="跳過 calib 裡的留一組交叉驗證")
     ap.add_argument("--onnx", action="store_true", help="另存 model.onnx（之後轉 HEF；要裝 onnx）")
+    ap.add_argument("--drop", nargs="*", default=[],
+                    help="對照用：calib 裡名稱含這些字的組不拿來訓練（例如 --drop 寶寶1 ＝ 不用 11/17 隊友那批）")
+    ap.add_argument("--tag", default="", help="輸出檔名後面加 _<tag>（model_<tag>.pt 等），不蓋掉別的版本")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    suffix = f"_{args.tag}" if args.tag else ""
 
     rows = [r for r in read_csv(AIR / "crops.csv") if r["crop"]]
-    calib = [r for r in rows if r["half"] == "calib"]
+    calib = [r for r in rows if r["half"] == "calib" and not any(d in r["group"] for d in args.drop)]
     hold = [r for r in rows if r["half"] == "hold"]
+    field = [r for r in rows if r["half"] == "field"]
+    if args.drop:
+        print(f"不拿來訓練（--drop）：{sorted({r['group'] for r in rows if r['half'] == 'calib'} - {r['group'] for r in calib})}")
     print(f"有頭部特寫的：calib {len(calib)}（看得到 {sum(r['target'] == '1' for r in calib)}）、"
           f"hold {len(hold)}（看得到 {sum(r['target'] == '1' for r in hold)}）｜{device}", flush=True)
 
@@ -210,9 +258,9 @@ def main():
 
     print(f"\n== 用整個 calib 訓練（{args.epochs} 個 epoch）", flush=True)
     model = train(calib, args.epochs, args.seed, device)
-    torch.save(model.state_dict(), AIR / "model.pt")
+    torch.save(model.state_dict(), AIR / f"model{suffix}.pt")
     probs = predict(model, items_of(hold), device)
-    with open(AIR / "hold_pred.csv", "w", newline="", encoding="utf-8-sig") as fh:
+    with open(AIR / f"hold_pred{suffix}.csv", "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=["name", "group", "label", "staged", "note", "v3_slot", "p_visible"])
         writer.writeheader()
         for r, p in zip(hold, probs):
@@ -234,12 +282,14 @@ def main():
     if n_none:
         print(f"  找不到人、沒有頭部特寫的幀（交給偵測器）：{dict(n_none)}")
     vlm_compare(model, device)
+    if field:
+        field_report(model, field, device, suffix)
 
     if args.onnx:
         torch.onnx.export(model.cpu().eval(), torch.zeros(1, 3, SIZE, SIZE), str(AIR / "model.onnx"),
                           input_names=["image"], output_names=["logit"], opset_version=17, dynamo=False)
         print(f"→ {AIR / 'model.onnx'}")
-    print(f"\n→ {AIR / 'model.pt'}、{AIR / 'hold_pred.csv'}（共 {time.perf_counter() - t0:.0f} 秒）")
+    print(f"\n→ {AIR / f'model{suffix}.pt'}、{AIR / f'hold_pred{suffix}.csv'}（共 {time.perf_counter() - t0:.0f} 秒）")
 
 
 if __name__ == "__main__":
