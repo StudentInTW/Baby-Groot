@@ -6,6 +6,8 @@ hailo/hailo_infer.py
 - 輸入：uint8 NHWC 640×640×3（BGR，跟 prep_calib.py 存的、rtmlib 的前處理一樣），可以一張或一批 (N, 640, 640, 3)。
 - 輸出：HailoRT 自己反量化成 float32，依 HEF 的輸出順序回傳 list，每個是 (N, H, W, C)。RTMO 的 8 個輸出交給
   rtmo_post.Post 用形狀對應；YuNet 的 12 個由 yunet_hef.py 依原本 ONNX 的節點名稱對應。
+- Hef(path, batch)：HailoRT 一次連著跑幾張再換下一段（多 context 的模型 batch 大比較快；不到 batch 張也照跑）。
+  一次送 N 張時每 batch 張一起送。主流程在同一個程序裡用 batch 1；晶片放子程序、多床合批時是 FG_CHIP_BATCH（chip_process.py）。
 - 多個模型共用一顆晶片：同一個程序裡的 Hef 都開在同一個 VDevice（shared_vdevice），HailoRT 的排程器輪流執行。
 - 裝置斷線（UGen300 自己重開過，`HAILO_COMMUNICATION_CLOSED`，11/06）：等它恢復（服務會自動把系統重傳進去，
   通常 1–3 秒）、重開 VDevice 和所有模型、把這一批重送一次；印一行記錄，次數在 hailo_infer.reconnects。
@@ -28,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 TIMEOUT_MS = 10000
+RECONNECT = True            # 斷線時在這個程序裡自己重連；晶片子程序（chip_process）設成 False：直接報錯、讓主程序把子程序整個重開
 RECONNECT_WAIT_S = 120      # 斷線後最多等裝置恢復這麼久
 DRAIN_WAIT_S = 30           # 重連前最多等別的執行緒手上的晶片工作結束這麼久
 _VDEVICE = None
@@ -149,8 +152,9 @@ class Hef:
         """裝置斷線後丟掉舊的模型（不能 shutdown，連線已經斷了）。"""
         self.configured = self.model = None
 
-    def __call__(self, images):
-        """images：(640, 640, 3) 或 (N, 640, 640, 3) uint8 → [每個輸出 (N, H, W, C) float32]。"""
+    def __call__(self, images, out=None):
+        """images：(640, 640, 3) 或 (N, 640, 640, 3) uint8 → [每個輸出 (N, H, W, C) float32]。
+        out：給一組 (N, H, W, C) float32 陣列（照 self.outputs 的順序）就直接寫進去（晶片子程序寫進共用記憶體用）。"""
         from hailo_platform.pyhailort.pyhailort import HailoRTException
         images = np.ascontiguousarray(images, dtype=np.uint8)
         if not images.flags.writeable:                # HailoRT 只收可寫的陣列（np.load 的 mmap 是唯讀）
@@ -163,8 +167,10 @@ class Hef:
             gen, cm = _generation, self.configured
             _enter()
         try:
-            return self._run(cm, images)
+            return self._run(cm, images, out)
         except HailoRTException as e:
+            if not RECONNECT:
+                raise
             failed = type(e).__name__       # 只留名稱：例外物件連著這次送出的工作和舊的模型
         finally:
             cm = None                       # 先放掉舊的模型，再說「我不在晶片上了」（_drain 在等）
@@ -175,19 +181,22 @@ class Hef:
             cm = self.configured
             _enter()
         try:
-            return self._run(cm, images)
+            return self._run(cm, images, out)
         finally:
             cm = None
             _leave()
 
-    def _run(self, cm, images):
-        outs = {n: np.empty((len(images),) + s, np.float32) for n, s in self.outputs}
+    def _run(self, cm, images, out=None):
+        """每 self.batch 張一起送（一次 run_async 給多組 bindings，HailoRT 才會連著跑完這一批再換下一段）；batch 1 時一張一張送。"""
+        outs = ({n: np.empty((len(images),) + s, np.float32) for n, s in self.outputs} if out is None
+                else {n: o for (n, _), o in zip(self.outputs, out)})
         jobs = []
-        for k in range(len(images)):
-            b = cm.create_bindings(input_buffers={self.input_name: images[k]},
-                                   output_buffers={n: outs[n][k] for n, _ in self.outputs})
-            cm.wait_for_async_ready(timeout_ms=TIMEOUT_MS)
-            jobs.append(cm.run_async([b]))
+        for s in range(0, len(images), self.batch):
+            bs = [cm.create_bindings(input_buffers={self.input_name: images[k]},
+                                     output_buffers={n: outs[n][k] for n, _ in self.outputs})
+                  for k in range(s, min(s + self.batch, len(images)))]
+            cm.wait_for_async_ready(timeout_ms=TIMEOUT_MS, frames_count=len(bs))
+            jobs.append(cm.run_async(bs))
         for j in jobs:
             j.wait(TIMEOUT_MS)
         return [outs[n] for n, _ in self.outputs]

@@ -29,8 +29,11 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
         --res 720 --workers 1 4 8 --vlm model/genai/Qwen2-VL-2B-Instruct.hef [--vlm-every 5]
         # 同時另一條執行緒問晶片上的 VLM（hailo/vlm_hef.py 的 Background；不停地問，或每題隔幾秒），
         # 量主流程會慢多少、VLM 每題多久。VLM 只能跟主流程同一個程序（Windows＋USB 第二個程序開不了裝置）
-輸出：outputs/bench/cpu_multistream.csv（換了模型時是 multistream_<代號>.csv，加 --vlm 時再接 _vlm 或 _vlm<秒>s；
-      每種設定一列）、終端機摘要
+    FG_CHIP_PROCESS=1 FG_CHIP_BATCH=8 FG_RTMO_HEF=model/rtmo_D1.hef \
+        uv run python -m evaluation.bench_multistream --threads --modes full --res 720 --workers 1 2 4 8 16
+        # 晶片放子程序（hailo/chip_process.py），多床送來的圖合成一批送（FG_CHIP_BATCH 張以內；不設是一次一張）
+輸出：outputs/bench/cpu_multistream.csv（換了模型時是 multistream_<代號>.csv；晶片放子程序時再接 _proc，合批再接 _b<張數>；
+      加 --vlm 時再接 _vlm 或 _vlm<秒>s；每種設定一列）、終端機摘要
 """
 
 import argparse
@@ -80,6 +83,14 @@ def load_frames(height):
             frames.append(cv2.resize(frame, (round(frame.shape[1] * s), height), interpolation=cv2.INTER_AREA))
     cap.release()
     return frames
+
+
+def chip_tag():
+    """晶片放子程序（FG_CHIP_PROCESS=1）時接在輸出檔名後面：_proc；合批（FG_CHIP_BATCH>1）再接 _b<張數>。"""
+    if os.environ.get("FG_CHIP_PROCESS") != "1":
+        return ""
+    from hailo.chip_process import MAX_BATCH
+    return "_proc" + (f"_b{MAX_BATCH}" if MAX_BATCH > 1 else "")
 
 
 def load_models():
@@ -281,7 +292,7 @@ def main():
                              **{f"{k}_ms": round(v, 1) for k, v in ms.items() if k not in ("total", "total_p95")}})
     keys = sorted({k for r in rows for k in r}, key=lambda k: list(rows[0]).index(k) if k in rows[0] else 99)
     vlm_tag = (f"_vlm{args.vlm_every:g}s" if args.vlm_every else "_vlm") if vlm else ""
-    out = OUT_DIR / ((f"multistream_{rtmo_tag()}" if rtmo_tag() else "cpu_multistream") + vlm_tag + ".csv")
+    out = OUT_DIR / ((f"multistream_{rtmo_tag()}" if rtmo_tag() else "cpu_multistream") + chip_tag() + vlm_tag + ".csv")
     with open(out, "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=keys)
         writer.writeheader()
