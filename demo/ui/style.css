@@ -52,6 +52,14 @@ main { height: calc(100% - 64px); }
 .tile .mini > div { height: 100%; border-radius: 6px; background: var(--c); }
 .tile.red { animation: pulse 1s infinite; }
 @keyframes pulse { 50% { outline-color: #ff8a80; } }
+/* 離線（紫燈）：AI 盒子沒回應。虛線框＝燈號不明，畫面照常播（影像來自監視主機） */
+.tile.offline { outline-style: dashed; }
+.offline-banner { position: fixed; top: 76px; left: calc((100% - 360px) / 2); transform: translateX(-50%); z-index: 15;
+  display: flex; align-items: center; gap: 12px; white-space: nowrap; background: #7b1fa2; color: #fff; border-radius: 14px;
+  padding: 10px 16px 10px 18px; box-shadow: 0 8px 24px rgba(0,0,0,.3); font-size: 17px; animation: dropdown .3s; }
+.offline-banner strong { font-size: 19px; letter-spacing: .04em; }
+.offline-banner small { background: rgba(255,255,255,.22); border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+@keyframes dropdown { from { transform: translate(-50%, -16px); opacity: 0; } }
 
 .sidebar { background: var(--panel); border-left: 1px solid var(--line); padding: 24px; display: flex; flex-direction: column; min-height: 0; }
 .counts { display: flex; gap: 8px; margin-top: 16px; }

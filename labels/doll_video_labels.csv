@@ -21,7 +21,7 @@ IMG_8116,L,100,102,ok,safe,仰躺
 IMG_8116,R,100,102,alert,danger,趴睡臉朝下
 IMG_8116,L,112,116,ok,safe,仰躺
 IMG_8116,R,112,116,alert,unseen,趴睡頭往側邊這個角度看不到口鼻
-IMG_8116,L,126,130,alert,warn,趴在抱枕上頭擺側邊臉埋進抱枕
+IMG_8116,L,126,130,alert,unseen,趴在抱枕上頭擺側邊從側面看口鼻露出但鏡頭看不到
 IMG_8116,R,126,130,alert,unseen,趴睡頭往側邊這個角度看不到口鼻
 IMG_8150,L,2,6,ok,safe,仰躺
 IMG_8150,R,2,6,alert,danger,衣服遮住口鼻

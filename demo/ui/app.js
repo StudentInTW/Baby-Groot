@@ -1,16 +1,25 @@
 // 護理站介面原型（給影片的操作示範錄螢幕用）。不接後端、不連外；燈號全部來自 cribs.js（系統對娃娃影片的真實判定）。
 // 畫面：1 安裝（框床位、標床頭、拍空床照，存 localStorage）→ 2 護理站牆面（8 床同步播放）→ 3 單床詳細
 //       → 4 紅燈處理（Acknowledge 記到事件列表）→ 5 手機推播（只有文字）。
+// 離線（紫燈，2026/11/23）：右上角 ⚡ 模擬一次晶片卡住（錄好的判定裡沒有真的斷線，所以是模擬，畫面上會標明）。
+//   跟 live_view.py／crib_state.Liveness 同一套規則：最後一次判讀後 OFFLINE_AFTER 秒還沒有新的判讀就變紫燈，
+//   主程序 12 秒逾時重開晶片、約 FAULT_S 秒後恢復。鏡頭畫面照常播（影像來自監視主機，不經過 AI 盒子），只是燈號不明。
+//   離線期間錄好的燈號變化，恢復時才顯示（那段時間系統其實不知道）；離線前已經響的紅燈不會因為離線就收掉，要等恢復或護理師確認。
+//   恢復後直接接錄好的燈號（真的系統會把離線那段當成「看不到」接著計時，見 crib_state.CribState.resume，可能更早變紅）。
+//   離線要不要推播到手機還沒定，所以只在護理站顯示。
 "use strict";
 
 const PRODUCT = "FirstGlance";        // 產品名（暫定），改這裡就好
 const STORE_KEY = "firstglance.setup"; // 安裝設定存在 localStorage
 const ALERT_TEXT = "nose and mouth hidden 3 s";
+const OFFLINE_AFTER = 2;               // 秒；跟 pipeline/crib_state.OFFLINE_AFTER 一樣
+const FAULT_S = 13.5;                  // 模擬晶片卡住到恢復的秒數（hailo/結果.md：逾時 12 秒＋重開約 1.5 秒）
+const OFFLINE_STATE = { color: "#7b1fa2", title: "OFFLINE", desc: "Not being analysed right now: check this crib in person" };
 
 const $ = (id) => document.getElementById(id);
 let D = null;     // cribs.js 的資料
 let END = 0;      // 最長那一段的長度（秒）：播到這裡就停
-const S = { t: 0, playing: false, last: null, view: "wall", detail: null, acks: [], notes: 0, phoneOn: false };
+const S = { t: 0, playing: false, last: null, view: "wall", detail: null, acks: [], notes: 0, phoneOn: false, faults: [] };
 
 // ── 載入資料：data/（真資料）→ 沒有就用 sample/（假資料）；?sample 強制用假資料 ──
 function loadScript(src) {
@@ -41,7 +50,14 @@ function clockStr(t, seconds = true) {
   const c = D.clock0 + Math.floor(t + 1e-6);
   return `${pad(Math.floor(c / 3600))}:${pad(Math.floor(c / 60) % 60)}` + (seconds ? `:${pad(c % 60)}` : "");
 }
+// 模擬的晶片故障：S.faults = [{ at: 卡住的時刻, back: 恢復的時刻 }]，所有床一起受影響
+const faultAt = (t) => S.faults.find((f) => t > f.at + 1e-6 && t < f.back);   // 這段時間沒有判讀
+const offlineAt = (t) => { const f = faultAt(t); return !!f && t >= f.at + OFFLINE_AFTER - 1e-6; };
+const shown = (t) => { const f = faultAt(t); return f ? f.back : t; };        // 沒判讀那段的燈號變化，恢復時才看得到
 function stateAt(c, t) {
+  const f = faultAt(t);
+  if (f && t >= f.at + OFFLINE_AFTER - 1e-6) return { show: "offline", silent: t - f.at };
+  if (f) t = f.at;                                                             // 還沒到 2 秒：維持卡住前最後一個燈號
   const i = clamp(Math.floor(t / D.step + 1e-6), 0, c.show.length - 1);
   return { show: c.show[i], hidden: c.hidden[i], count: c.count[i], adult: c.adult[i], matches: c.matches[i], vlm: c.vlm[i] };
 }
@@ -83,6 +99,7 @@ function setPlaying(on) {
 function seek(t) {
   S.t = clamp(t, 0, END);
   S.acks = S.acks.filter((a) => a.at <= S.t + 1e-6);
+  S.faults = S.faults.filter((f) => f.at <= S.t + 1e-6);   // 往回跳到故障之前：那次故障當作沒發生
   S.notes = Infinity; // 往回跳不要震動
 }
 function syncVideo(v, c) {
@@ -168,17 +185,22 @@ function renderWall() {
       c.tile._show = st.show;
       c.tile.style.setProperty("--c", meta.color);
       c.tile.classList.toggle("red", st.show === "red");
+      c.tile.classList.toggle("offline", st.show === "offline");
       c.tile.querySelector(".tag").textContent = `${c.id}  ${meta.title}`;
     }
     const mini = c.tile.querySelector(".mini");
     mini.hidden = st.show !== "count";
     if (st.show === "count") mini.firstChild.style.width = `${Math.min(st.count / 3, 1) * 100}%`;
   }
+  const off = offlineAt(S.t);
+  $("offline-banner").hidden = !off;
+  if (off) $("offline-text").textContent =
+    `All ${D.cribs.length} cribs · no analysis for ${Math.floor(S.t - faultAt(S.t).at)} s · check the cribs in person`;
   const key = JSON.stringify(counts);
   if ($("counts")._key !== key) {
     $("counts")._key = key;
     $("counts").innerHTML = "";
-    for (const title of ["GREEN", "YELLOW", "RED", "BLUE", "GRAY"]) {
+    for (const title of ["GREEN", "YELLOW", "RED", "BLUE", "GRAY", "OFFLINE"]) {
       const color = Object.values(D.states).find((s) => s.title === title).color;
       const box = el("div", "", `${counts[title] || 0}<small>${title}</small>`);
       box.style.background = color;
@@ -188,22 +210,39 @@ function renderWall() {
   renderEvents();
 }
 
+// 離線那段裡發生的變化：系統只在恢復時看到最後的結果，所以只留每床最後一個、而且恢復時還是那個燈的事件
+function seenEvent(c, e) {
+  const f = faultAt(e.t);
+  if (!f) return true;
+  const last = c.events.filter((x) => faultAt(x.t) === f).pop();
+  return last === e && stateAt(c, f.back).show === e.show;
+}
 function renderEvents() {
   const evs = [];
-  for (const c of D.cribs) for (const e of c.events) if (e.t <= S.t + 1e-6) evs.push(e);
+  for (const c of D.cribs) for (const e of c.events) if (shown(e.t) <= S.t + 1e-6 && seenEvent(c, e)) evs.push({ ...e, t: shown(e.t) });
   for (const a of S.acks) evs.push({ t: a.at, crib: a.crib, ack: a });
+  for (const f of S.faults) {
+    if (f.at + OFFLINE_AFTER <= S.t + 1e-6) evs.push({ t: f.at + OFFLINE_AFTER, sys: "offline", f });
+    if (f.back <= S.t + 1e-6) evs.push({ t: f.back, sys: "online", f });
+  }
   evs.sort((a, b) => b.t - a.t);
-  const key = evs.map((e) => `${e.crib}${e.t}${e.show || "ack"}`).join("|");
+  const key = evs.map((e) => `${e.crib}${e.t}${e.show || e.sys || "ack"}`).join("|");
   if ($("events")._key === key) return;
   $("events")._key = key;
   $("events").innerHTML = "";
   for (const e of evs.slice(0, 30)) {
     const li = el("li", e.ack ? "ack" : "");
     const dot = el("i", "dot");
-    if (e.ack) {
+    if (e.sys) {
+      dot.style.background = e.sys === "offline" ? colorOf("offline") : colorOf("green");
+      li.append(dot, el("strong", "", e.sys === "offline" ? "All cribs · OFFLINE" : "All cribs · back online"),
+        el("span", "", e.sys === "offline"
+          ? `${clockStr(e.t)} · AI box not answering for ${OFFLINE_AFTER} s (simulated chip fault)`
+          : `${clockStr(e.t)} · analysis resumed after ${(e.f.back - e.f.at).toFixed(1)} s`));
+    } else if (e.ack) {
       dot.style.background = colorOf("care");
       li.append(dot, el("strong", "", `Crib ${e.crib} · nurse at the crib`),
-        el("span", "", `${clockStr(e.t)} · acknowledged ${(e.ack.at - e.ack.start).toFixed(1)} s after the alert`));
+        el("span", "", `${clockStr(e.t)} · acknowledged ${(e.ack.at - shown(e.ack.start)).toFixed(1)} s after the alert`));
     } else {
       dot.style.background = colorOf(e.show);
       li.append(dot, el("strong", "", `Crib ${e.crib} · ${D.states[e.show].title}`),
@@ -224,6 +263,12 @@ function drawTimeline(c) {
     g.fillStyle = colorOf(s);
     g.fillRect(Math.floor((i / n) * w), 0, Math.ceil(w / n) + 1, h);
   });
+  for (const f of S.faults) {   // 模擬的離線那段
+    const x0 = clamp((f.at + OFFLINE_AFTER) / c.duration, 0, 1) * w, x1 = clamp(f.back / c.duration, 0, 1) * w;
+    g.fillStyle = colorOf("offline");
+    g.fillRect(Math.floor(x0), 0, Math.ceil(x1 - x0), h);
+  }
+  cv._key = JSON.stringify(S.faults);
 }
 
 function renderDetail() {
@@ -234,10 +279,16 @@ function renderDetail() {
   $("detail-title").textContent = meta.title;
   $("detail-desc").textContent = meta.desc;
   $("detail-countdown").hidden = st.show !== "count";
-  $("detail-fill").style.width = `${Math.min(st.count / 3, 1) * 100}%`;
-  $("detail-count").textContent = `${st.count.toFixed(1)} s of 3 s`;
+  if (st.show === "count") {
+    $("detail-fill").style.width = `${Math.min(st.count / 3, 1) * 100}%`;
+    $("detail-count").textContent = `${st.count.toFixed(1)} s of 3 s`;
+  }
   const grey = colorOf("empty");
-  const signals = [
+  const signals = st.show === "offline" ? [
+    ["Last completed analysis", `${Math.floor(st.silent)} s ago`, colorOf("offline")],
+    ["Reason", "AI box not answering (simulated chip fault)", colorOf("offline")],
+    ["Camera picture", "still live: it comes from the camera recorder", grey],
+  ] : [
     ["Face detector, every frame", st.hidden ? "nose and mouth NOT visible" : "nose and mouth visible",
       st.hidden ? colorOf("red") : colorOf("green")],
     ["VLM second look, every second", st.vlm === null ? "—" : `P(nose and mouth visible) = ${st.vlm.toFixed(2)}`,
@@ -257,13 +308,19 @@ function renderDetail() {
       $("signals").append(li);
     }
   }
+  if ($("timeline-canvas")._key !== JSON.stringify(S.faults)) drawTimeline(c);   // 按了 ⚡ 或往回跳
   $("timeline-cursor").style.left = `${clamp(S.t / c.duration, 0, 1) * 100}%`;
 }
 
 // ── 4. 紅燈處理 ──
+// 紅燈段落實際被看到的時段：開始在離線那段裡的，恢復時才響；在離線那段裡結束的，恢復時才知道已經好了；
+// 整段都在離線裡的，系統根本不知道（不響）
+const redFrom = (ep) => shown(ep.start);
+const redTo = (ep) => shown(ep.end);
+const redSeen = (ep) => redFrom(ep) < redTo(ep);
 function activeAlert() {
   for (const c of D.cribs) {
-    const ep = c.reds.find((e) => e.start <= S.t + 1e-6 && S.t < e.end);
+    const ep = c.reds.find((e) => redSeen(e) && redFrom(e) <= S.t + 1e-6 && S.t < redTo(e));
     if (ep && !S.acks.some((a) => a.crib === c.id && a.start === ep.start)) return { c, ep };
   }
   return null;
@@ -273,7 +330,7 @@ function renderAlert() {
   $("alert").hidden = !a;
   if (!a) return;
   $("alert-title").textContent = `Crib ${a.c.id} · RED`;
-  $("alert-sub").textContent = `${ALERT_TEXT} · ${(S.t - a.ep.start).toFixed(0)} s ago`;
+  $("alert-sub").textContent = `${ALERT_TEXT} · ${(S.t - redFrom(a.ep)).toFixed(0)} s ago`;
   $("alert").dataset.crib = a.c.id;
   $("alert").dataset.start = a.ep.start;
 }
@@ -281,8 +338,8 @@ function renderAlert() {
 // ── 5. 手機推播（只有文字） ──
 function renderPhone() {
   const notes = [];
-  for (const c of D.cribs) for (const ep of c.reds) if (ep.start <= S.t + 1e-6) notes.push({ c, ep });
-  notes.sort((a, b) => b.ep.start - a.ep.start);
+  for (const c of D.cribs) for (const ep of c.reds) if (redSeen(ep) && redFrom(ep) <= S.t + 1e-6) notes.push({ c, ep });
+  notes.sort((a, b) => redFrom(b.ep) - redFrom(a.ep));
   if (notes.length > S.notes && !$("phone").hidden) {
     $("phone").classList.remove("buzz");
     void $("phone").offsetWidth;
@@ -300,9 +357,9 @@ function renderPhone() {
   for (const { c, ep } of notes.slice(0, 5)) {
     const ack = S.acks.find((a) => a.crib === c.id && a.start === ep.start);
     const li = el("li");
-    li.append(el("div", "app", `<b>${PRODUCT.toUpperCase()}</b><span>${clockStr(ep.start, false)}</span>`),
+    li.append(el("div", "app", `<b>${PRODUCT.toUpperCase()}</b><span>${clockStr(redFrom(ep), false)}</span>`),
       el("strong", "", `Crib ${c.id} · ${ALERT_TEXT}`));
-    if (ack) li.append(el("div", "acked", `✓ You acknowledged (${(ack.at - ack.start).toFixed(1)} s)`));
+    if (ack) li.append(el("div", "acked", `✓ You acknowledged (${(ack.at - redFrom(ep)).toFixed(1)} s)`));
     $("notes").append(li);
   }
 }
@@ -355,7 +412,7 @@ function setupRender() {
   drawSetup();
 }
 function doneHtml() {
-  const rows = ["green", "count", "red", "care", "empty"].map((k) =>
+  const rows = ["green", "count", "red", "care", "empty", "offline"].map((k) =>
     `<li><i style="background:${colorOf(k)}"></i><b>${D.states[k].title}</b><span>${D.states[k].desc}</span></li>`).join("");
   return `The box now watches this crib. Lights on the nurse station:<ul class="legend">${rows}</ul>`;
 }
@@ -491,7 +548,12 @@ function render() {
 function bind() {
   document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.view)));
   $("play").addEventListener("click", () => setPlaying(!S.playing));
-  $("restart").addEventListener("click", () => { seek(0); S.acks = []; S.notes = 0; setPlaying(true); });
+  $("restart").addEventListener("click", () => { seek(0); S.acks = []; S.faults = []; S.notes = 0; setPlaying(true); });
+  $("fault").addEventListener("click", () => {   // 模擬一次晶片卡住（離線中再按不算）
+    if (faultAt(S.t) || S.t >= END) return;
+    S.faults.push({ at: S.t, back: S.t + FAULT_S });
+    setPlaying(true);
+  });
   $("phone-toggle").addEventListener("click", () => {
     S.phoneOn = !S.phoneOn;
     $("phone").hidden = !S.phoneOn;
@@ -517,6 +579,7 @@ function bind() {
 
 loadData().then((data) => {
   D = data;
+  D.states.offline = D.states.offline || OFFLINE_STATE;   // 11/23 以前匯出的資料沒有離線燈
   D.cribs.forEach(prep);
   END = Math.max(...D.cribs.map((c) => c.duration));
   document.title = `${PRODUCT} · nurse station prototype`;

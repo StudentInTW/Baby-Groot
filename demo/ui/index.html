@@ -22,6 +22,7 @@
     <span id="clock" class="clock">--:--:--</span>
     <button id="play" class="ctl" title="Play / pause (space)">▶</button>
     <button id="restart" class="ctl" title="Restart">⟲</button>
+    <button id="fault" class="ctl" title="Simulate a chip fault: the AI box stops answering for 13.5 s (prototype)">⚡</button>
     <button id="phone-toggle" class="ctl" title="Show the nurse's phone">📱</button>
   </div>
 </header>
@@ -67,6 +68,10 @@
   <!-- 2. 護理站牆面 -->
   <section id="view-wall" class="view">
     <div class="wall" id="wall"></div>
+    <!-- 離線（紫燈）：AI 盒子沒回應時蓋在牆面上方；鏡頭畫面照常播 -->
+    <div class="offline-banner" id="offline-banner" hidden role="status" aria-live="polite">
+      <strong>OFFLINE</strong><span id="offline-text"></span><small>SIMULATED</small>
+    </div>
     <aside class="sidebar">
       <h1>Nurse station</h1>
       <p class="muted" id="wall-sub"></p>

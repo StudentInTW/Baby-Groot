@@ -114,7 +114,7 @@ whether the face can be seen.
   | --- | --- | --- | --- |
   | Real infant photos (SyRIP, 700) | 97.7% found, 6.1% false alerts, 98.6% alerted when hidden | 99.0% found, 6.3% false alerts, 98.6% alerted | 99.0%, 7.1%\*, 97.3% |
   | Doll photos (185 dolls), crib mode | Alert recall 90.2%, false alerts 12.2% | 91.7%, 10.2% | 90.2%, 14.3% |
-  | Doll videos (6), crib mode, 5 FPS | 30/37 danger segments caught, 8/40 safe segments with a false alert | 31/37, 9/40 | 31/37, 10/40 |
+  | Doll videos (6), crib mode, 5 FPS | 29/36 danger segments caught, 8/40 safe segments with a false alert | 30/36, 9/40 | 30/36, 10/40 |
 
   Moving RTMO-m to the chip changes nothing beyond noise. Moving YuNet too costs a little: the four doll photos that
   flip are all faces scored near the 0.7 threshold (two extra false faces at 0.71 and 0.73, two real faces pushed just
@@ -190,7 +190,7 @@ These are proxies: real infant photos taken at home, dolls, and simulations. The
 | --- | --- |
 | Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found; 6.1% false alerts when the face is visible; 98.6% alerted when it is hidden |
 | Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
-| Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 29/37 danger segments caught (78%), 7/40 safe segments with a false alert; 5 FPS: 30/37 and 8/40. Four segments where the mouth and nose are uncovered but out of the camera's view (side-lying facing away, prone with the head turned) are listed apart and not scored; the system alerted on 2 of them |
+| Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 28/36 danger segments caught (78%), 7/40 safe segments with a false alert; 5 FPS: 29/36 and 8/40. Five segments where the mouth and nose are uncovered but out of the camera's view (side-lying facing away, prone with the head turned) are listed apart and not scored; the system alerted on 3 of them |
 | Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
 | Caregiving pause and empty crib (prototype) | Both empty-crib spans end gray instead of red; no danger segment judged empty; no new false alerts. On a normal pick-up (11/08 batch) the light never turns red; the plain 3-second rule rang for about 49 s |
 | 11/08 batch: another doll at home, mostly dim (6 per-crib videos, 33 photos; also the classifier's training data) | Videos, 1 FPS: crib mode 4/8 danger segments caught, 1/15 false alerts; with the mouth-skin check (v4) 7/8 and 1/15 (one uncovered side-lying segment out of the camera's view is listed apart). Misses are a cover over the mouth with the eyes showing. Photos: face-down 5/5, but a white collar over the mouth 0/5 even with v4 |
@@ -258,7 +258,10 @@ uv run python -m demo.export_assets                   # export real lights for t
 ```
 
 The clickable nurse-station prototype is `demo/ui/index.html`: open it in a browser, no server needed. Without exported
-data it uses the synthetic sample in `demo/ui/sample/`.
+data it uses the synthetic sample in `demo/ui/sample/`. The ⚡ button simulates a chip fault (the recorded lights contain
+no real one): after 2 s every crib turns purple ("offline") with a banner, after 13.5 s (the 12 s timeout plus about
+1.5 s to restart the chip) the lights come back, and anything that changed during the gap shows only then, as it would
+in the real system. A red alert raised before the fault stays up through the gap.
 
 ### HEF compilation (Hailo Dataflow Compiler)
 
@@ -374,7 +377,8 @@ docs/           technical write-up and test reports (Chinese)
 - The UGen300 drops off USB now and then (every few minutes with YuNet on the chip under load; with RTMO-m alone a few
   times a night when several cribs' frames are on the chip at once, none in 18 hours one frame at a time), and we do
   not know why. With the chip in a child process (`FG_CHIP_PROCESS=1`) the pipeline
-  recovers by itself in 1–2 s, and gaps over 2 s show as a purple "offline" light. That light exists only in the
-  single-crib live view so far; the nurse-station screen and a notification for it are not built yet.
+  recovers by itself in 1–2 s, and gaps over 2 s show as a purple "offline" light. The live view shows that light on
+  real judgments; the nurse-station prototype shows it only for a simulated fault. Whether it should also reach the
+  nurse's phone is not decided yet.
 - Spit-up is not detected; it is a Stage II research item.
 - Getting the per-crib streams depends on the livestream vendors; that is part of Stage II.
