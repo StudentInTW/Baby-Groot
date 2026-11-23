@@ -20,10 +20,19 @@ CribState（2026/10/10，原型）：每床鏡頭再加照護中暫停計時、�
 EdgeFeatures 每幀算兩個便宜的特徵（都在縮成長邊 160 像素的小圖上算，比找臉便宜得多）：
   床位邊緣一圈的移動量（跟前一幀比）、跟空床參考畫面的色差。空床參考畫面是安裝時拍一張。
 評估見 evaluation/crib_context.py。
+
+Liveness（2026/11/23）：每床的判讀心跳 → 離線狀態（紫燈）。晶片會從 USB 掉下來（hailo/結果.md「裝置斷線」），
+子程序重開那 1–2 秒、卡住時約 13.5 秒、裝置回不來時一直都沒有判讀；判讀出錯也一樣。這時候不能停在最後一個燈號
+（最危險的是停在綠燈），要讓護理師知道「這床現在沒人在看」。用牆上時鐘算：超過 OFFLINE_AFTER 秒沒有完成判讀、
+或最近一次判讀出錯 → 離線；下一次判讀成功就恢復。離線期間 CribState 不動；判讀的這一幀跟上一次判讀的幀
+（畫面時間）隔超過 OFFLINE_AFTER 秒時，update 之前先呼叫 CribState.resume() 和 EdgeFeatures.reset()：斷線前的移動紀錄作廢（隔了十幾秒的兩幀拿來比「床邊有沒有動」不準：11/23 晶片卡住 12 秒的測試，
+恢復後把斷線前有手的那幀跟現在比，判成大人在床邊、暫停計時，臉朝下的娃娃變藍燈），離線那段當作看不到：
+恢復時口鼻看不到就從斷線前最後一次判讀算起（通常馬上紅燈），寧可多叫一次。
 """
 
 import math
 import os
+import time
 from collections import deque
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
@@ -39,6 +48,8 @@ CARE_HOLD = 1.5      # 動作停了幾秒才算大人離開
 ARM = 10             # 大人離開後幾秒內允許判空床
 EMPTY_TH = 14        # 跟空床參考的平均色差低於這個算「相符」（IMG_8432：空床 3.9–9.4，有娃娃的片段最低 19.4）
 CONFIRM = 2          # 相符要持續幾秒才判空床（比 3 秒警示短，才不會先閃紅燈）
+OFFLINE_AFTER = 2.0  # 超過這麼多秒沒有完成判讀 → 離線。平常每床 0.4–0.5 秒判一次，一次一張 18 小時單床最長 0.8 秒
+                     # 沒判讀；合批 4 斷線救回最長 1.9 秒。超過 2 秒的空檔會讓 3 秒警示晚 2 秒以上，就要顯示出來
 
 
 class AlertState:
@@ -75,8 +86,20 @@ class CribState:
         self.arm_deadline = math.inf   # 開機時還沒看過臉：允許判空床
         self.match_since = None
         self.empty = False
+        self.gap_from = None
+
+    def resume(self, t_last):
+        """離線恢復、下一次 update 之前呼叫；t_last 是離線前最後一次判讀的時間（跟 update 的 t 同一個時鐘）。見檔頭 Liveness。"""
+        self.recent.clear()
+        self.last_motion = None
+        self.match_since = None
+        self.gap_from = t_last
 
     def update(self, t, hidden, motion, ref_diff):
+        if self.gap_from is not None:   # 離線剛恢復：離線那段當作看不到
+            if hidden and not self.empty and self.alarm.since_hidden is None:
+                self.alarm.since_hidden, self.alarm.since_visible = self.gap_from, None
+            self.gap_from = None
         self.recent.append(motion >= MOTION_TH)
         if sum(self.recent) >= 2:
             self.last_motion = t
@@ -106,6 +129,29 @@ class CribState:
         if not hidden:
             self.arm_deadline = -math.inf  # 寶寶在床上：要等下一次有大人來，才可能變空床
         return "alert" if alert else "ok"
+
+
+class Liveness:
+    """一張床的判讀心跳（見檔頭）。判讀成功呼叫 ok()、出錯呼叫 fail(錯誤)；顯示前問 offline()。
+    用牆上時鐘（time.monotonic），不是影片時間：晶片卡住時判讀不會回來，影片時間也就不會前進。
+    剛開機還沒判讀過時，從建立的時間開始算。"""
+
+    def __init__(self, after=OFFLINE_AFTER, clock=time.monotonic):
+        self.after, self.clock = after, clock
+        self.last_ok, self.error = clock(), None
+
+    def ok(self):
+        self.last_ok, self.error = self.clock(), None
+
+    def fail(self, err):
+        self.error = f"{type(err).__name__}: {err}" if isinstance(err, BaseException) else str(err)
+
+    def silent_for(self):
+        """距離上次判讀成功幾秒。"""
+        return self.clock() - self.last_ok
+
+    def offline(self):
+        return self.error is not None or self.silent_for() > self.after
 
 
 def small(frame, rect):
@@ -153,6 +199,10 @@ class EdgeFeatures:
         diff = float(np.abs(img.astype(np.float32) - self.ref).mean()) if self.ref is not None else None
         self.prev = gray
         return motion, diff
+
+    def reset(self):
+        """離線恢復後：下一幀不跟斷線前的幀比移動（見檔頭 Liveness）。"""
+        self.prev = None
 
 
 def read_empty_ref(cap, slot):

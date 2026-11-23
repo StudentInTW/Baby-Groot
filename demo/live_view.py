@@ -12,7 +12,10 @@ VLM 不即時跑（筆電 GPU 在另一個虛擬環境），畫面上不顯示 V
 用法：
     uv run python -m demo.live_view IMG_8432 --start 80                 # 開視窗；q／Esc 結束、空白鍵暫停
     uv run python -m demo.live_view IMG_8432 --start 80 --end 112 --save outputs/demo/live_IMG_8432.mp4   # 同時把視窗畫面存一份
+    uv run python -m demo.live_view IMG_8432 --start 80 --fault error@90          # 測離線狀態（紫燈）：第 90 秒起判讀出錯 5 秒
+    FG_CHIP_PROCESS=1 FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m demo.live_view IMG_8432 --start 80 --fault hang@90 kill@105
 錄螢幕：Windows 按 Win+Alt+R（Xbox Game Bar）或用 OBS。
+離線（紫燈）：判讀出錯、或超過 2 秒沒判讀完（晶片斷線重開、卡住）就不顯示最後的燈號，見 crib_state.Liveness。
 """
 
 import argparse
@@ -67,6 +70,20 @@ def draw_panel(size, cam_box, show, row, metrics, args):
     for i, line in enumerate(wrap(d, desc, f(30), x1 - x0)):
         d.text((x0, y + i * int(40 * k)), line, font=f(30), fill=(30, 30, 30))
     y += int(84 * k)
+    if show == "offline":  # 離線：不顯示判斷依據（都是舊的），改顯示多久沒判讀、為什麼
+        y += int(96 * k)
+        d.text((x0, y), "WHY", font=f(24, True), fill=(16, 74, 133))
+        reason = row["error"] or "no answer from the analysis (chip busy or reconnecting)"
+        signals = [("Last completed analysis", f"{row['silent']:.0f} s ago", color),
+                   ("Reason", reason[:60], color)]
+        for i, (label, value, c) in enumerate(signals):
+            yy = y + int((44 + i * 72) * k)
+            d.ellipse((x0, yy + int(8 * k), x0 + int(20 * k), yy + int(28 * k)), fill=c)
+            d.text((x0 + int(36 * k), yy), label, font=f(24), fill=(90, 100, 110))
+            d.text((x0 + int(36 * k), yy + int(30 * k)), value, font=f(28, True), fill=(30, 30, 30))
+        d.text((x0, h - int(44 * k)), "Lights resume by themselves after the next completed analysis · laptop prototype",
+               font=f(22), fill=(120, 130, 140))
+        return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
     if show == "count":  # 3 秒倒數條
         frac = min(row["count"] / 3.0, 1.0)
         d.rounded_rectangle((x0, y, x1, y + int(30 * k)), radius=int(15 * k), fill=(235, 228, 205))
@@ -91,10 +108,27 @@ def draw_panel(size, cam_box, show, row, metrics, args):
     return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
 
+def parse_faults(specs):
+    """--fault 種類@秒 → [(秒, 種類)]，照時間排好。"""
+    out = []
+    for s in specs or []:
+        kind, _, sec = s.partition("@")
+        if kind not in FAULTS or not sec:
+            raise SystemExit(f"--fault {s}：要寫成 種類@秒，種類是 {'／'.join(FAULTS)}")
+        out.append((float(sec), kind))
+    return sorted(out)
+
+
+FAULTS = ("error", "kill", "hang")
+ERROR_S = 5   # --fault error：判讀連續出錯幾秒
+
+
 class Analyzer(threading.Thread):
     """背景判讀：主迴圈照影片原速播放，每 1/fps 秒交一幀進來；上一幀還沒判讀完就不收
     （判讀跟不上時 FPS 會掉，跟真的裝置一樣）。畫面因此不會因為判讀而卡頓，燈號比畫面晚一次判讀的時間。
-    onnxruntime、OpenCV 運算時會放開 GIL，所以用執行緒就好。"""
+    onnxruntime、OpenCV 運算時會放開 GIL，所以用執行緒就好。
+    離線（crib_state.Liveness）：判讀出錯、或超過 2 秒沒有判讀完（晶片斷線重開、卡住），latest() 就給紫色的離線畫面，
+    不給最後一次的燈號；下一次判讀成功自己恢復。"""
 
     def __init__(self, args, doll, slots, rots, run_pose, det, det_v5, feat, ctx, size, cam_box, scale):
         super().__init__(daemon=True)
@@ -106,6 +140,31 @@ class Analyzer(threading.Thread):
         self.panel, self.boxes, self.count = None, [], 0
         self.done = deque(maxlen=int(args.fps * 3) + 1)  # 最近幾次判讀完成的時間，算判讀 FPS
         self.ms_hist = deque(maxlen=max(1, int(args.fps)))  # 最近一秒的處理毫秒數，取平均顯示
+        self.live = crib_state.Liveness()
+        self.errors = self.lapses = self.resumes = 0
+        self.last_t = None   # 上一次判讀成功的那一幀的影片時間
+        self.faults, self.error_until = parse_faults(args.fault), -1.0
+        self._off_key, self._off_panel, self._shown_off, self._off_since = None, None, False, None
+
+    def inject_fault(self, t):
+        """--fault 測試用：到了影片第幾秒製造一次故障。error：接下來 ERROR_S 秒判讀直接出錯（不用晶片）；
+        kill：砍掉晶片子程序（等於晶片當掉，FG_CHIP_PROCESS=1 才有）；hang：暫停晶片子程序（等於卡住，主程序 12 秒後砍掉重開）。"""
+        while self.faults and t >= self.faults[0][0]:
+            at, kind = self.faults.pop(0)
+            print(f"[故障測試] 影片 {t:.1f} 秒：{kind}", flush=True)
+            if kind == "error":
+                self.error_until = at + ERROR_S
+                continue
+            import hailo.chip_process as cp
+            if cp._proc is None:
+                print("[故障測試] 沒有晶片子程序（要設 FG_CHIP_PROCESS=1、FG_RTMO_HEF），略過", flush=True)
+            elif kind == "kill":
+                cp._proc.kill()
+            else:
+                import psutil
+                psutil.Process(cp._proc.pid).suspend()
+        if t < self.error_until:
+            raise RuntimeError("simulated analysis error (--fault error)")
 
     def submit(self, t, frame):
         with self.cond:
@@ -115,9 +174,27 @@ class Analyzer(threading.Thread):
             self.cond.notify()
             return True
 
-    def latest(self):
-        with self.cond:
-            return self.panel, self.boxes
+    def latest(self, t):
+        """目前該顯示的面板和臉框。離線時給離線面板（每秒重畫一次，顯示多久沒判讀），臉框不畫（都是舊的）。"""
+        off = self.live.offline()
+        if off != self._shown_off:
+            self._shown_off = off
+            if off:
+                self.lapses += 1
+                self._off_since = time.monotonic()
+                print(f"[離線] 影片 {t:.1f} 秒：{self.live.silent_for():.1f} 秒沒有判讀"
+                      + (f"（{self.live.error[:80]}）" if self.live.error else ""), flush=True)
+            else:
+                print(f"[恢復] 影片 {t:.1f} 秒：離線 {time.monotonic() - self._off_since:.1f} 秒", flush=True)
+        if not off:
+            with self.cond:
+                return self.panel, self.boxes
+        key = (int(self.live.silent_for()), self.live.error)
+        if key != self._off_key:
+            row = {"silent": self.live.silent_for(), "error": self.live.error}
+            self._off_key = key
+            self._off_panel = draw_panel(self.size, self.cam_box, "offline", row, self.metrics(t), self.args)
+        return self._off_panel, []
 
     def stop(self):
         with self.cond:
@@ -138,8 +215,25 @@ class Analyzer(threading.Thread):
                     return
                 (t, frame), self.inbox, self.busy = self.inbox, None, True
             tic = time.perf_counter()
-            result, _, faces = crib_detect.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots)
+            try:
+                self.inject_fault(t)
+                result, _, faces = crib_detect.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots)
+            except Exception as e:   # 晶片重開、重送之後還是失敗等：這床離線，等下一幀再試；狀態機不動
+                self.live.fail(e)
+                self.errors += 1
+                if self.errors <= 3 or self.errors % 50 == 0:
+                    print(f"[判讀出錯 {self.errors}] 影片 {t:.1f} 秒：{type(e).__name__}: {str(e)[:100]}", flush=True)
+                with self.cond:
+                    self.busy = False
+                continue
             hidden = result[self.doll]["v3_slot"] == "hidden"
+            if self.last_t is not None and t - self.last_t > crib_state.OFFLINE_AFTER:
+                # 這一幀跟上一次判讀的幀隔太久（中間離線）：用畫面時間判斷，因為卡住時那一幀是卡住前送進來的，
+                # 恢復後的「下一幀」才是隔了十幾秒的那一幀
+                self.feat.reset()
+                self.ctx.resume(self.last_t)
+                self.resumes += 1
+            self.last_t = t
             motion, diff = self.feat.update(frame)
             state = self.ctx.update(t, hidden, motion, diff)
             show = demo_render.display_state(self.ctx, state, hidden)
@@ -154,6 +248,7 @@ class Analyzer(threading.Thread):
             boxes = [tuple(int(v * self.scale) for v in f[:4]) for f in faces]
             with self.cond:
                 self.panel, self.boxes, self.busy = panel, boxes, False
+            self.live.ok()   # 新面板放好之後才算恢復，不然會閃一下斷線前的舊燈號
 
 
 def main():
@@ -168,6 +263,9 @@ def main():
     ap.add_argument("--width", type=int, default=1600, help="視窗寬度（高度＝寬度×9/16）")
     ap.add_argument("--save", help="同時把視窗畫面存成影片（.mp4）")
     ap.add_argument("--no-window", action="store_true", help="不開視窗（搭配 --save 用）")
+    ap.add_argument("--fault", nargs="*", metavar="種類@秒",
+                    help="測試離線狀態：影片第幾秒製造故障，可以給好幾個。error＝判讀連續出錯 5 秒（不用晶片）；"
+                         "kill＝砍掉晶片子程序；hang＝暫停晶片子程序（後兩個要 FG_CHIP_PROCESS=1）")
     args = ap.parse_args()
 
     ann = video_labels.load()[args.video]
@@ -217,11 +315,11 @@ def main():
             break
         if t - last_sent >= interval and analyzer.submit(t, frame):
             last_sent = t
-        if wall0 is None:  # 第一幀：等模型暖機、判讀完才開始計時
-            while analyzer.panel is None:
+        if wall0 is None:  # 第一幀：等模型暖機、判讀完才開始計時（第一幀就出錯的話直接顯示離線）
+            while analyzer.panel is None and analyzer.live.error is None:
                 time.sleep(0.01)
             wall0 = time.perf_counter() - (t - args.start)
-        panel, boxes = analyzer.latest()
+        panel, boxes = analyzer.latest(t)
         canvas = panel.copy()
         cam = cv2.resize(frame, (cw, ch), interpolation=cv2.INTER_AREA)
         for (x0, y0, x1, y1) in boxes:
@@ -260,7 +358,8 @@ def main():
     cv2.destroyAllWindows()
     m = analyzer.metrics(0)
     print(f"顯示 {frames} 幀、為了維持原速跳過 {skipped} 幀；判讀 {analyzer.count} 次，最後判讀 FPS "
-          f"{m['fps'] or 0:.1f}、每幀處理平均 {m['ms'] or 0:.0f} ms")
+          f"{m['fps'] or 0:.1f}、每幀處理平均 {m['ms'] or 0:.0f} ms；離線 {analyzer.lapses} 次、判讀出錯 {analyzer.errors} 次、"
+          f"斷線後重接狀態機 {analyzer.resumes} 次")
 
 
 if __name__ == "__main__":

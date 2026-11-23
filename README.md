@@ -35,7 +35,7 @@ flowchart LR
   host --> crib["Crib mode: search the whole crib,<br/>turned to its head direction"]
   crib --> face
   face --> vis{"Nose and mouth<br/>visible?"}
-  vis --> state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray"]
+  vis --> state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray,<br/>no judgment = offline"]
   state --> nurse["Nurse-station screen<br/>+ silent text alert"]
   vlm["VLM second check<br/>(Stage II)"] -.->|can ask for a look, never cancels| state
 ```
@@ -53,7 +53,10 @@ Each step and where it lives in the code:
 4. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
    face must last 1 s before it resets the timer, so one false face does not restart the count. `CribState` pauses the
    timer while an adult's hand moves at the crib edge, and turns an empty crib gray when it matches the crib's empty
-   reference photo. Motion never clears an alert that is already sounding. `pipeline/crib_state.py`
+   reference photo. Motion never clears an alert that is already sounding. `Liveness` turns a crib purple ("offline,
+   check this crib in person") when no judgment has finished for 2 s or the last one failed, instead of leaving the
+   last light (possibly green) on screen; when judgments come back after a gap, motion seen before the gap is
+   discarded and the gap counts as hidden, so a covered face turns red at once. `pipeline/crib_state.py`
 5. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
    the baby's nose and mouth?". It can raise a yellow "please look", or rank red alerts, but never cancel one: its answer
    flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`. A small classifier trained on our own doll
@@ -133,15 +136,30 @@ whether the face can be seen.
   most of the CPU free for decoding the camera streams, which the hybrid uses up. Per model (`hailortcli run2`,
   random input): RTMO-m 58 FPS at batch 1 and 95 at batch 8 (17 ms on the chip, 31 ms including USB); YuNet 221 FPS.
   The UGen300 does not report power or current; we will measure power with a USB-C meter.
-- **USB disconnects:** with YuNet on the chip the UGen300 occasionally restarts (`HAILO_COMMUNICATION_CLOSED`) and
-  HailoRT's service reloads it: 3 times in a 21-minute video evaluation, once in a 3-minute YuNet-only stress test
-  (`hailo/stress_chip.py`) and 3 times in 5 minutes with 8 cribs at once. It never happened with RTMO-m alone on the
-  chip (about 45 minutes of evaluation, plus 8 minutes with 8–16 cribs). With one thread, `hailo/hailo_infer.py`
-  reconnects and resends the batch within 1–3 s. With several threads sharing the chip, releasing the dead connection
-  can deadlock inside pyHailoRT (its completion callbacks need the GIL that `VDevice.release()` holds); waiting for
-  the other threads first recovered 2 times out of 3. A reliable fix is to run the chip in a separate process and
-  restart that process on a disconnect. The cause of the restarts is not known yet (USB power or firmware). Those
-  seconds are not judged, which is what the planned per-crib "offline" state must show.
+- **USB disconnects and recovery:** now and then the UGen300 drops off USB and comes back by itself
+  (`HAILO_COMMUNICATION_CLOSED`; Windows logs each drop as Kernel-PnP event 1010 for `USB\VID_0B05&PID_1D6F`, and the
+  log matches every disconnect our scripts saw). With YuNet on the chip it happens every few minutes with 8 cribs
+  (3 times in 5 minutes; once in a 3-minute YuNet-only stress test, `hailo/stress_chip.py`). With RTMO-m alone it shows
+  up in long runs (8 cribs, 720p): 9 times in 3.5 hours when 8 crib threads each sent frames to the chip, 5 times in
+  8 hours when the cribs' frames went as one batch of up to 4, and none in 18 hours one frame at a time. Lined up by
+  the clock, batching dropped as often as separate threads (4 times each between 01:00 and 03:00), while between 03:00
+  and 04:30, where the threads dropped 5 times in 1.6 hours, one frame at a time ran 3 hours over two nights without a
+  drop. One frame at a time differs in two ways, fewer frames on the chip at once and a less busy chip (22 instead of
+  29–30 frames per second), and we cannot tell which matters; the cause is not known (USB power, firmware or driver).
+  With one thread,
+  `hailo/hailo_infer.py` reconnects and resends within 1–3 s. With several threads, releasing the dead connection can
+  deadlock inside pyHailoRT (its completion callbacks need the GIL that `VDevice.release()` holds), and one overnight
+  run hung that way. So for several cribs the chip runs in a child process (`hailo/chip_process.py`,
+  `FG_CHIP_PROCESS=1`): on any chip error the child exits, the main process starts a new one (about 1.5 s to reopen the
+  device and models) and resends the batch, and a child that stops answering is killed after 12 s. By default the
+  child takes one frame at a time (21.6 frames per second for 8 cribs, about 2.7 per crib). With `FG_CHIP_BATCH=4` the
+  frames queued by several cribs go to the chip together through shared memory: 28.8 frames per second, outputs
+  bit-identical to one frame at a time, and in 8 hours with 8 cribs (818,407 frames) all 5 disconnects were recovered
+  with no errors and no crib went more than 1.9 s without a judgment. A child that hangs (simulated by suspending it)
+  costs 13.5 s. The live view shows those gaps as a purple "offline" light (`crib_state.Liveness`, 2 s without a
+  judgment). Tested on the chip with `demo.live_view --fault hang@86 kill@105`: the hung child turned the crib purple
+  2 s after the last judgment and the light came back 11.8 s later; the killed child was back within 2 s, under the
+  offline threshold.
 - **VLM on the UGen300** (`hailo/vlm_hef.py`): Hailo's GenAI Model Zoo ships Qwen2-VL-2B-Instruct already compiled for
   the Hailo-10H (HEF for HailoRT 5.4.0, 3.26 GB), and pyHailoRT for Windows includes the VLM API. On the chip it loads in
   20 s and answers a yes/no question in 1.03 s (first token; 7 tokens/s after that), as in Hailo's published table.
@@ -233,6 +251,7 @@ uv run python -m evaluation.eval_video IMG_8735 --cctv daycare --fps 1    # resu
 
 ```bash
 uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed
+uv run python -m demo.live_view IMG_8432 --start 80 --fault error@90   # test the offline light: 5 s of failed judgments
 uv run python -m demo.demo_render IMG_8432 --start 80 --end 112   # single crib: camera + light + reasons
 uv run python -m demo.demo_render --grid              # nurse-station mock-up (8 cribs)
 uv run python -m demo.export_assets                   # export real lights for the clickable UI
@@ -271,6 +290,7 @@ uv run --with onnx python hailo/compare_rtmo.py --hef model/rtmo_D1.hef --data r
 uv run python -m hailo.compare_yunet_chip model/yunet_A.hef       # YuNet on the chip vs OpenCV, same inputs
 uv run python -m hailo.stress_chip model/rtmo_D1.hef model/yunet_A.hef --sec 180   # USB disconnect stress test
 FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef uv run python -m evaluation.bench_multistream --threads --res 720 --workers 1 2 4 8 16
+FG_CHIP_PROCESS=1 FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --res 720 --workers 1 2 4 8 16   # chip in a child process (add FG_CHIP_BATCH=4 to batch the cribs)
 # VLM (Qwen2-VL-2B HEF from Hailo's GenAI Model Zoo, see below)
 uv run python -m hailo.vlm_hef model/genai/Qwen2-VL-2B-Instruct.hef   # smoke test: load time, input, seconds per question
 uv run python -m experiments.vlm_spike IMG_8429 IMG_8432 --chip model/genai/Qwen2-VL-2B-Instruct.hef   # second check on the chip
@@ -281,6 +301,11 @@ FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --th
 In PowerShell set the variables first, e.g. `$env:FG_RTMO_HEF = "model/rtmo_D1.hef"; $env:FG_YUNET_HEF = "model/yunet_A.hef"`.
 Every evaluation and demo script accepts them. `bench_multistream --threads` runs the cribs as threads of one
 process that share the UGen300 (one VDevice; HailoRT's scheduler takes turns between the two models).
+`FG_CHIP_PROCESS=1` moves the chip into a child process that is restarted after a USB disconnect; we use it for
+several cribs and for long runs. `FG_CHIP_BATCH=4` also sends the queued frames of several cribs as one batch, which
+is a third faster with 8 cribs but dropped off USB more often at night (see "USB disconnects and recovery" above).
+Neither changes the results. `--vlm` still opens the chip from the main process, so it cannot be combined with
+`FG_CHIP_PROCESS=1`.
 The Qwen2-VL HEF is not compiled by us: download it from
 [Hailo's GenAI Model Zoo](https://github.com/hailo-ai/hailo_model_zoo_genai/blob/v5.4.0/docs/MODELS.rst) (the v5.4.0
 build, matching HailoRT 5.4.0) into `model/genai/`. With `--vlm`, a thread of the same process asks the VLM while the
@@ -317,7 +342,7 @@ pipeline/       the per-crib pipeline (the part that runs on the edge box)
   infant_face_v5.py   experiment: v4 + three face levels (ok / warn / alert)
   face_common.py      thresholds, YuNet face search, matching faces to people, drawing
   crib_detect.py      one frame: is the face visible in each crib (crib mode)
-  crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib
+  crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib, offline
 evaluation/     evaluation scripts and their helpers (label loading, simulated night view, simulated CCTV footage)
 demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
 experiments/    earlier versions (v1, v2) and exploratory spikes kept for comparison, including the VLM second check
@@ -346,7 +371,10 @@ docs/           technical write-up and test reports (Chinese)
   also flags babies lying on their side with the face visible.
 - A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
 - Night (IR) footage is only simulated, and grayscale raises false alerts.
-- With YuNet on the UGen300 the USB link drops every few minutes under load. Recovery works with one thread but can
-  hang with several, and there is no per-crib "offline" state yet to show those gaps.
+- The UGen300 drops off USB now and then (every few minutes with YuNet on the chip under load; with RTMO-m alone a few
+  times a night when several cribs' frames are on the chip at once, none in 18 hours one frame at a time), and we do
+  not know why. With the chip in a child process (`FG_CHIP_PROCESS=1`) the pipeline
+  recovers by itself in 1–2 s, and gaps over 2 s show as a purple "offline" light. That light exists only in the
+  single-crib live view so far; the nurse-station screen and a notification for it are not built yet.
 - Spit-up is not detected; it is a Stage II research item.
 - Getting the per-crib streams depends on the livestream vendors; that is part of Stage II.

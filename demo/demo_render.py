@@ -8,6 +8,7 @@ demo_render.py
   紅  連續 3 秒看不到 → 推播給護理師
   藍  照護中（大人在床邊），暫停計時
   灰  空床
+  紫  離線：超過 2 秒沒有判讀或判讀出錯（晶片斷線、卡住），請直接去看這張床（live_view.py 才有，crib_state.Liveness）
 資料來源：eval_video.py 的每幀判定（v3＋床位）、crib_state.py 的照護中／空床狀態機、
 vlm_spike.py --every 的 VLM 時間軸（有的話；連續 VLM_HOLD 次 P(看得到口鼻) < VLM_TH 才亮「請看一眼」）。
 臉框是重跑偵測畫的（只跑輸出的那一段）。
@@ -63,6 +64,7 @@ STATES = {  # 顯示狀態 → (顏色 RGB, 標題, 說明)
     "red": ((217, 45, 32), "RED", "Hidden for 3 s: silent alert sent to the nurse"),
     "care": ((21, 101, 192), "BLUE", "Adult at the crib: timer paused"),
     "empty": ((110, 120, 130), "GRAY", "Empty crib: matches its empty photo, no alert"),
+    "offline": ((123, 31, 162), "OFFLINE", "Not being analysed right now: check this crib in person"),
 }
 
 
