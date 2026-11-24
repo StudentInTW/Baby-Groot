@@ -121,7 +121,7 @@ whether the face can be seen.
 
   | Test | Float models on the CPU | RTMO-m on the UGen300 | RTMO-m and YuNet on the UGen300 |
   | --- | --- | --- | --- |
-  | Real infant photos (SyRIP, 700) | 97.7% found, 6.1% false alerts, 98.6% alerted when hidden | 99.0% found, 6.3% false alerts, 98.6% alerted | 99.0%, 7.1%\*, 97.3% |
+  | Real infant photos (SyRIP, 700; 571 with the face visible, 72 hidden) | 97.7% found, 6.1% false alerts, 98.6% alerted when hidden | 99.0% found, 6.3% false alerts, 98.6% alerted | 99.0%, 7.1%\*, 97.3% |
   | Doll photos (185 dolls), crib mode | Alert recall 90.2%, false alerts 12.2% | 91.7%, 10.2% | 90.2%, 14.3% |
   | Doll videos (6), crib mode, 5 FPS | 29/36 danger segments caught, 8/40 safe segments with a false alert | 30/36, 9/40 | 30/36, 10/40 |
 
@@ -232,7 +232,7 @@ fixed before any of these runs.
 
 | Test | Result (v3, the base v6 builds on) |
 | --- | --- |
-| Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found; 6.1% false alerts when the face is visible; 98.6% alerted when it is hidden |
+| Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found (684/700); 6.1% false alerts when the face is visible (35/571); 98.6% alerted when it is hidden (71/72) |
 | Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
 | Doll videos (6 videos, 3-second rule, crib mode) | 1 FPS per crib: 28/36 danger segments caught (78%), 7/40 safe segments with a false alert; 5 FPS: 29/36 and 8/40. Five segments where the mouth and nose are uncovered but out of the camera's view (side-lying facing away, prone with the head turned) are listed apart and not scored; the system alerted on 3 of them |
 | Per-crib doll clips (2 videos, one camera per crib) | 3/7 caught, 0/7 false alerts; misses include an ear taken for a face |
@@ -241,7 +241,7 @@ fixed before any of these runs.
 | VLM second check (laptop GPU, 2 unseen clips) | Safe vs dangerous head crops AUC 0.98; found all 13 frames the detector missed, at the cost of 9 extra look requests on safe frames |
 | VLM second check on the UGen300 (same 2 clips) | Not usable yet: input fixed at 336×336 and no probabilities. On head crops it still finds all 13 missed frames but would ask for a look on 26 of 38 safe frames (all 21 side faces) |
 | Mouth/nose classifier (experiment; trained on one half of our doll footage, scored once on the other half) | Retrained on 11/09 with a new doll batch added (1,208 head crops): hidden airway 186/194 correct, visible 624/892 (AUC 0.951; first version 189/194, 601/892, 0.965). As a second check it flags 61/67 frames the detector missed; on the per-crib clip it asks for 10 extra looks on 228 safe frames. It still calls every side-lying side face of two dolls "not visible" (0/246 in one clip): in the training half those dolls show only frontal faces when the airway is clear, and the new doll's side faces did not carry over to them. On the VLM's 40 test frames: 3/24 extra looks (laptop VLM 5/24, chip VLM 16/24) |
-| Simulated night (grayscale, software only) | Real infant false alerts rise from 6.1% to 18.3%; not a substitute for real IR footage |
+| Simulated night (grayscale, software only) | Real infant false alerts (SyRIP, 571 images with the face visible) rise from 6.1% to 18.3%; not a substitute for real IR footage |
 
 Details, failure cases and the experimental v4/v5 variants: [`docs/architecture.md`](./docs/architecture.md),
 [`docs/影片測試結果.md`](./docs/影片測試結果.md), [`docs/娃娃測試結果.md`](./docs/娃娃測試結果.md).
