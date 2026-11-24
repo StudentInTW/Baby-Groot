@@ -14,7 +14,10 @@ eval_video.py
                          label＝alert 加 staged＝unseen 是「口鼻沒被蓋、但鏡頭看不到」（例如側躺背對鏡頭）：
                          不算危險也不算安全，另外列「有響幾段」（2026/11/14 Harry 決定）。
 
-比較四種判定（v3、v3＋床位、v4＋床位、v5＋床位；每幀的判定在 pipeline/crib_detect.py）。
+比較五種判定（v3、v3＋床位、v4＋床位、v5＋床位、v6＋床位；每幀的判定在 pipeline/crib_detect.py）。
+v6＋床位是主流程（口鼻小塊模型，infant_face_v6.py）：要有 model/mouth_patch_ens3.onnx（不在 repo 裡，見 README），
+沒有這個檔就只比前四種（--no-v6 也一樣）。v6 的訓練資料是 hailo/prep_calib.py SPLITS 的 calib 那一半影片，
+只有 hold 和場域的影片公平：跑到 calib 的影片時，合計後面另外印一行「只算 v6 沒訓練過的影片」。
 警示規則（pipeline/crib_state.py 的 AlertState）：每個床位各自一個狀態機，連續 --on 秒看不到 → 警示；連續 --off 秒看得到 → 解除；
 看得到要持續 --blip 秒以上才會把「看不到」的計時歸零（防閃爍）。
 
@@ -44,8 +47,8 @@ import numpy as np
 from evaluation import cctv_sim, video_labels
 from evaluation.degrade import degrade, describe, tag
 from evaluation.video_labels import read_csv
-from pipeline import infant_face_v3, infant_face_v4, infant_face_v5
-from pipeline.crib_detect import MODES, detect, slot_pose
+from pipeline import infant_face_v3, infant_face_v4, infant_face_v5, infant_face_v6
+from pipeline.crib_detect import MODES, MODES_V6, detect, slot_pose
 from pipeline.crib_state import AlertState
 from pipeline.face_common import FACE_SCORE_TH, GREEN, RED, YELLOW, create_face_detector, put_label
 from pipeline.infant_face_v3 import load_rtmo, rtmo_tag
@@ -54,7 +57,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # 不是娃娃的影片要指定名稱才跑，不混進娃娃影片的合計（數字才跟之前的對得上）；local_ 標註檔裡的影片也一樣
 NOT_DOLL = {"嬰兒翻身"}  # 嘉晏哥哥提供的 AI 生成影片：灰階夜視俯拍，一個嬰兒仰→側→趴（dataset/嬰兒翻身.mp4）
 OUT_DIR = ROOT / "outputs" / "video_eval"
-MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot", "v5_slot": "v5+slot"}
+MODE_NAMES = {"v3": "v3", "v3_slot": "v3+slot", "v4_slot": "v4+slot", "v5_slot": "v5+slot", "v6_slot": "v6+slot"}
 PREVIEW_W = 540     # 標註影片的寬度
 
 
@@ -222,7 +225,7 @@ def draw_preview(frame, t, slots, persons, faces, alert_now, segments, mode):
     return cv2.resize(vis, (PREVIEW_W, round(h * s)), interpolation=cv2.INTER_AREA)
 
 
-def run_video(name, ann, args, run_pose, detector, det_v5):
+def run_video(name, ann, args, run_pose, detector, det_v5, mouth=None):
     """逐幀偵測（每秒 --fps 幀），存每幀結果和標註影片。回傳 rows、影片長度。"""
     path = video_labels.find_video(name)
     slots, rots, segments = ann["slots"], ann["rot"], ann["segments"]
@@ -243,7 +246,7 @@ def run_video(name, ann, args, run_pose, detector, det_v5):
             _, frame = cap.retrieve()
             frame = degrade(frame, args.gray, args.dim, seed=i)  # 雜訊每幀不同（像真的感測器），seed＝幀號可重現
             t = i / src_fps
-            states, persons, faces = detect(run_pose, detector, det_v5, frame, slots, rots)
+            states, persons, faces = detect(run_pose, detector, det_v5, frame, slots, rots, mouth=mouth)
             alert_now = {}
             for doll, st in states.items():
                 seg = gt_at(segments, doll, t)
@@ -251,7 +254,7 @@ def run_video(name, ann, args, run_pose, detector, det_v5):
                              "persons": st["persons"], **{m: st[m] for m in MODES},
                              "v5_tier": st["v5_tier"],
                              "face_scores": st["face_scores"], "slot_face_scores": st["slot_face_scores"],
-                             "mouth_skin": st["mouth_skin"]})
+                             "mouth_skin": st["mouth_skin"], **({"mouth_p": st["mouth_p"]} if mouth else {})})
                 alert_now[doll] = live[doll].update(t, st[args.preview] == "hidden")
             pv = draw_preview(frame, t, slots, persons, faces, alert_now, segments, args.preview)
             if writer is None:
@@ -281,14 +284,16 @@ def main():
     ap.add_argument("--det-th", type=float, default=0.15, help="RTMO 找人門檻（預設 0.15，見 docs/娃娃測試結果.md §7）")
     ap.add_argument("--reuse", action="store_true", help="不重跑偵測，讀上次存的 <影片>_frames.csv 重算")
     ap.add_argument("--limit-sec", type=float, default=0, help="只跑前幾秒（試跑用；會覆蓋上次的輸出）")
-    ap.add_argument("--preview", choices=MODES[1:], default="v3_slot",
-                    help="標註影片的床位框顏色依哪一種判定（預設 v3_slot；v4 還沒通過真實嬰兒的誤報測試）")
+    ap.add_argument("--preview", choices=MODES_V6[1:],
+                    help="標註影片的床位框顏色依哪一種判定（預設主流程 v6_slot；沒有 v6 時 v3_slot）")
     ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
     ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
     ap.add_argument("--slot-rtmo", action="store_true",
                     help="實驗：RTMO 只看各床位的裁切（crib_detect.slot_pose），結果放 outputs/video_eval_slotrtmo/")
     ap.add_argument("--cctv", choices=cctv_sim.PRESETS,
                     help="改跑模擬監視器畫質的影片（cctv_sim.py），結果放 outputs/video_eval_cctv-<條件>/")
+    ap.add_argument("--no-v6", action="store_true",
+                    help="不比 v6＋床位（主流程，要有口鼻小塊模型檔）；只比 v3–v5")
     args = ap.parse_args()
 
     infant_face_v3.DET_TH = args.det_th
@@ -301,7 +306,23 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
     print(f"影像條件：{describe(args.gray, args.dim)}" + (f"｜模擬監視器 {args.cctv}" if args.cctv else ""))
     run_pose = detector = det_v5 = None
-    all_results = []
+    global MODES   # 有口鼻小塊模型才多比 v6＋床位那一欄
+    if args.no_v6:
+        use_v6, mouth = False, None
+    elif args.reuse:   # 讀上次存的每幀判定：每支都有 v6_slot 欄才比 v6
+        use_v6, mouth = all("v6_slot" in (read_csv(args.out_dir / f"{n}_frames.csv") or [{}])[0] for n in names), None
+        if not use_v6:
+            print("（有影片上次沒跑 v6，這次只比 v3–v5）")
+    else:
+        mouth = infant_face_v6.load_mouth_model()
+        use_v6 = mouth is not None
+    MODES = MODES_V6 if use_v6 else MODES_V6[:-1]
+    args.preview = args.preview or ("v6_slot" if use_v6 else "v3_slot")
+    if args.preview not in MODES:
+        ap.error(f"--preview {args.preview}：這次沒有比 v6（沒有口鼻小塊模型檔或加了 --no-v6）")
+    from hailo.prep_calib import SPLITS
+    v6_trained = set(SPLITS["calib"]["videos"])
+    all_results, unseen_results = [], []
     for name in names:
         ann = videos[name]
         if args.reuse:
@@ -314,13 +335,19 @@ def main():
                 run_pose = load_rtmo()
                 detector = create_face_detector(FACE_SCORE_TH)
                 det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
-            rows, duration = run_video(name, ann, args, run_pose, detector, det_v5)
+            rows, duration = run_video(name, ann, args, run_pose, detector, det_v5, mouth)
         results, alerts = evaluate(rows, ann["segments"], args.on, args.off, args.blip)
         report(name, results, args.on, args.off, args.blip)
         draw_timeline(name, rows, alerts, ann["segments"], duration, args.out_dir / f"{name}_timeline.png")
         all_results += results
+        if name not in v6_trained:
+            unseen_results += results
     if len(names) > 1:
         summarize(all_results, f"合計 {len(names)} 支影片｜{describe(args.gray, args.dim)}")
+    n_trained = sum(n in v6_trained for n in names)
+    if use_v6 and n_trained and len(names) - n_trained:
+        summarize(unseen_results, f"只算 v6 沒訓練過的 {len(names) - n_trained} 支（拿掉 calib 那一半的 {n_trained} 支）"
+                                  f"｜{describe(args.gray, args.dim)}")
     print(f"\n輸出：outputs/{args.out_dir.name}/（每幀判定 *_frames.csv、時間軸對照 *_timeline.png、標註影片 *_preview.mp4）")
 
 

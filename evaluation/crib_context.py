@@ -3,7 +3,8 @@ crib_context.py
 每床鏡頭的床位情境評估（2026/10/10，原型）：照護中暫停計時、空床不響。
 規則與參數在 pipeline/crib_state.py（CribState）；這支用娃娃影片比較「原本的 3 秒規則」和「加上床位情境」。
 
-輸入：eval_video.py 存的每幀判定（outputs/video_eval/<影片>_frames.csv，用 v3＋床位；要先跑過、每秒 5 幀），
+輸入：eval_video.py 存的每幀判定（outputs/video_eval/<影片>_frames.csv，用主流程 v6＋床位，
+舊的每幀判定沒有 v6 欄時用 v3＋床位；要先跑過、每秒 5 幀），
 再讀一次影片算兩個便宜的特徵（都在縮成長邊 160 像素的小圖上算，比找臉便宜得多）：
   床位邊緣一圈的移動量（跟前一幀比）、跟空床參考畫面的色差。
 空床參考畫面：床位檔的 empty_ref 欄（影片第幾秒是空床）；實機是安裝時拍一張。
@@ -27,6 +28,7 @@ import numpy as np
 
 from evaluation import video_labels
 from evaluation.video_labels import read_csv
+from pipeline.crib_detect import main_mode
 from pipeline.crib_state import (
     ARM, CARE_HOLD, CONFIRM, EMPTY_TH, MOTION_TH, AlertState, CribState, EdgeFeatures, read_empty_ref,
 )
@@ -61,15 +63,17 @@ def saved_fps(path):
     return 1 / statistics.median(gaps) if gaps else FPS
 
 
-def run(name, ann):
+def run(name, ann, mode=None):
     doll, slot = next(iter(ann["slots"].items()))
     frames = {float(r["t"]): r for r in read_csv(EVAL_DIR / f"{name}_frames.csv") if r["doll"] == doll}
     base, ctx, rows = AlertState(3, 2, 1), CribState(), []
+    mode = mode or main_mode(next(iter(frames.values()), {}))
+    print(f"{name}：燈號依 {mode}")
     for t, motion, diff in features(name, slot):
         r = frames.get(t)
         if r is None:
             continue
-        hidden = r["v3_slot"] == "hidden"
+        hidden = r[mode] == "hidden"
         seg = next((s for s in ann["segments"] if s["start"] <= t <= s["end"]), None)
         rows.append({"t": t, "gt": "" if seg is None else seg["label"], "staged": "" if seg is None else seg["staged"],
                      "hidden": int(hidden), "motion": round(motion, 4), "ref_diff": "" if diff is None else round(diff, 1),
@@ -197,6 +201,8 @@ def draw(name, rows, ann, out_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("videos", nargs="*", help="影片名稱；不給就跑床位檔裡有空床參考（empty_ref）的影片")
+    ap.add_argument("--mode", choices=["v6_slot", "v3_slot", "v4_slot", "v5_slot"],
+                    help="依哪一種判定（預設主流程 v6_slot；每幀判定沒有 v6 欄時 v3_slot）")
     args = ap.parse_args()
     anns = video_labels.load()
     names = args.videos or sorted(v for v, a in anns.items()
@@ -213,7 +219,7 @@ def main():
             print(f"[略過] {name} 的每幀判定是每秒約 {saved_fps(path):.0f} 幀，這支要每秒 {FPS} 幀；"
                   f"先用預設重跑：uv run python -m evaluation.eval_video {name}")
             continue
-        rows = run(name, ann)
+        rows = run(name, ann, args.mode)
         out = score(name, ann, rows)
         report(name, out)
         draw(name, rows, ann, OUT_DIR / f"{name}_context.png")

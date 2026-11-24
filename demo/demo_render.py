@@ -9,7 +9,7 @@ demo_render.py
   藍  照護中（大人在床邊），暫停計時
   灰  空床
   紫  離線：超過 2 秒沒有判讀或判讀出錯（晶片斷線、卡住），請直接去看這張床（live_view.py 才有，crib_state.Liveness）
-資料來源：eval_video.py 的每幀判定（v3＋床位）、crib_state.py 的照護中／空床狀態機、
+資料來源：eval_video.py 的每幀判定（主流程 v6＋床位；舊的每幀判定沒有 v6 欄時用 v3＋床位）、crib_state.py 的照護中／空床狀態機、
 vlm_spike.py --every 的 VLM 時間軸（有的話；連續 VLM_HOLD 次 P(看得到口鼻) < VLM_TH 才亮「請看一眼」）。
 臉框是重跑偵測畫的（只跑輸出的那一段）。
 
@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from evaluation import crib_context, eval_video, video_labels
 from pipeline import crib_detect, crib_state, infant_face_v5
+from pipeline.crib_detect import main_mode
 from pipeline.face_common import FACE_SCORE_TH, create_face_detector
 from pipeline.infant_face_v3 import load_rtmo
 from evaluation.video_labels import read_csv
@@ -107,13 +108,15 @@ def timeline_states(name, slot, end):
     vlm_path = ROOT / "outputs" / "vlm_spike" / f"timeline_{name}.csv"
     vlm = [(float(r["t"]), float(r["p_mouth"])) for r in read_csv(vlm_path)] if vlm_path.exists() else []
     ctx, rows = crib_state.CribState(), []
+    mode = main_mode(next(iter(frames.values()), {}))
+    print(f"{name}：燈號依 {mode}")
     for t, motion, diff in crib_context.features(name, slot):
         if t > end + 0.5:
             break
         r = frames.get(t)
         if r is None:
             continue
-        hidden = r["v3_slot"] == "hidden"
+        hidden = r[mode] == "hidden"
         state = ctx.update(t, hidden, motion, diff)
         checks = [p for tv, p in vlm if tv <= t][-VLM_HOLD:]
         vlm_hidden = len(checks) == VLM_HOLD and all(p < VLM_TH for p in checks)

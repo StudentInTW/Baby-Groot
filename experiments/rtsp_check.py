@@ -1,6 +1,6 @@
 """
 rtsp_check.py
-場域測試：讀一路 RTSP 串流（例如海康 DVR 某一路），量連線；加 --infer 跑 v3＋床位判讀，邊測邊用數字鍵標「現在擺的是什麼」，
+場域測試：讀一路 RTSP 串流（例如海康 DVR 某一路），量連線；加 --infer 跑主流程 v6＋床位判讀（--mode 可換對照），邊測邊用數字鍵標「現在擺的是什麼」，
 每次判讀寫一列 CSV，結束時印出每種擺法的結果。預設不存任何畫面；--record 才存判讀用的原始畫面（只在畫面裡只有娃娃時用）。
 --infer、--record 只對空床或娃娃用：真實嬰兒要等 IRB 和家長同意。
 
@@ -167,26 +167,29 @@ def run_multi(url, chans, seconds, name):
     print(f"→ {out}")
 
 
-def make_infer(slot, rot, mode="v3_slot"):
-    """載入 RTMO 和 YuNet，回傳 infer(frame) → 這一幀的判讀結果（dict）。"""
-    from pipeline import crib_detect, infant_face_v3, infant_face_v5
+def make_infer(slot, rot, mode="v6_slot"):
+    """載入 RTMO、YuNet（和口鼻小塊模型：mode 是 v6_slot 時一定要有，其他 mode 有檔案就順便記 v6），
+    回傳 infer(frame) → 這一幀的判讀結果（dict）。"""
+    from pipeline import crib_detect, infant_face_v3, infant_face_v5, infant_face_v6
     from pipeline.face_common import FACE_SCORE_TH, create_face_detector
     infant_face_v3.DET_TH = 0.15  # 跟 eval_video.py 一樣
     run_pose = infant_face_v3.load_rtmo()
     det = create_face_detector(FACE_SCORE_TH)
     det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
+    mouth = infant_face_v6.load_mouth_model(required=mode == "v6_slot")
     x0, y0, x1, y1 = slot
 
     def infer(frame):
         t = time.time()
-        res, persons, faces = crib_detect.detect(run_pose, det, det_v5, frame, {"S": slot}, {"S": rot})
+        res, persons, faces = crib_detect.detect(run_pose, det, det_v5, frame, {"S": slot}, {"S": rot}, mouth=mouth)
         ms = (time.time() - t) * 1000
         h, w = frame.shape[:2]
         boxes = [tuple(int(v) for v in f[:4]) for f in faces]
         in_slot = [b for b in boxes if x0 * w <= (b[0] + b[2]) / 2 <= x1 * w and y0 * h <= (b[1] + b[3]) / 2 <= y1 * h]
         r = res["S"]
         return {"verdict": r[mode], "v3_slot": r["v3_slot"], "v4_slot": r["v4_slot"], "v5_tier": r["v5_tier"],
-                "mouth_skin": r["mouth_skin"], "v3_person": r["v3"], "persons": len(persons), "persons_in_slot": r["persons"],
+                "mouth_skin": r["mouth_skin"], "v6_slot": r.get("v6_slot", ""), "mouth_p": r.get("mouth_p", ""),
+                "v3_person": r["v3"], "persons": len(persons), "persons_in_slot": r["persons"],
                 "faces_in_slot": len(in_slot), "face_px": max((b[2] - b[0] for b in in_slot), default=0),
                 "face_scores": r["slot_face_scores"], "ms": ms,
                 "person_boxes": [tuple(int(v) for v in p["box"][:4]) for p in persons], "face_boxes": boxes}
@@ -269,8 +272,9 @@ def main():
     ap.add_argument("--name", default="cam", help="檔名開頭，例如 cam04_main")
     ap.add_argument("--label", default=None, choices=list(LABELS), help="一開始的擺法（不開視窗時用）")
     ap.add_argument("--record", action="store_true", help="另存判讀用的原始畫面（只在畫面裡只有娃娃時用）")
-    ap.add_argument("--mode", default="v3_slot", choices=["v3_slot", "v4_slot", "v5_slot"],
-                    help="畫面和摘要用哪一種判定（預設 v3；v4 多檢查口鼻是不是膚色，擋只露眼睛的假臉）。CSV 三種都記")
+    ap.add_argument("--mode", default="v6_slot", choices=["v6_slot", "v3_slot", "v4_slot", "v5_slot"],
+                    help="畫面和摘要用哪一種判定（預設主流程 v6，要有口鼻小塊模型檔；v3 只看找不找得到臉；"
+                         "v4 多檢查口鼻是不是膚色）。CSV 都記")
     ap.add_argument("--no-window", action="store_true", help="判讀但不開視窗，跑 --seconds 秒")
     ap.add_argument("--channels", help="同時讀很多路（只解碼），例如 1-16、1-4、1,3,5")
     args = ap.parse_args()
@@ -311,7 +315,7 @@ def main():
         writer = csv.writer(log)
         writer.writerow(["clock", "t", "key", "label", "verdict", "v3_person", "persons", "persons_in_slot",
                          "faces_in_slot", "face_px", "face_scores", "ms", "stream", "width", "height", "slot", "rot",
-                         "rtmo_hef", "mode", "v3_slot", "v4_slot", "v5_tier", "mouth_skin"])
+                         "rtmo_hef", "mode", "v3_slot", "v4_slot", "v5_tier", "mouth_skin", "v6_slot", "mouth_p"])
         if args.record:
             rec = cv2.VideoWriter(f"{stem}.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 1 / INFER_EVERY,
                                   (first.shape[1], first.shape[0]))
@@ -338,7 +342,8 @@ def main():
                              out["persons_in_slot"], out["faces_in_slot"], out["face_px"], out["face_scores"],
                              f"{out['ms']:.0f}", host, frame.shape[1], frame.shape[0],
                              ",".join(f"{v:g}" for v in slot), args.rot, os.environ.get("FG_RTMO_HEF", ""),
-                             args.mode, out["v3_slot"], out["v4_slot"], out["v5_tier"], out["mouth_skin"]])
+                             args.mode, out["v3_slot"], out["v4_slot"], out["v5_tier"], out["mouth_skin"],
+                             out["v6_slot"], out["mouth_p"]])
         if not window:
             time.sleep(0.02)
             continue

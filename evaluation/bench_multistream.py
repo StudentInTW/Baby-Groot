@@ -5,6 +5,8 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
 月子中心嬰兒室是每床一支鏡頭，整個畫面就是一個床位，所以每一幀要做的是：
   full：v3＋床位（eval_video.py 的 v3_slot，娃娃影片 85% 那組數字用的就是這個）
         RTMO 找人 → 整張圖多尺度 YuNet → 每人頭部轉正 YuNet → 整個畫面當床位再找一次臉
+  v6：主流程 v6＋床位（2026/11/24 起）＝full 再加口鼻小塊模型（infant_face_v6.py，onnxruntime 在主機 CPU 上跑），
+        床位裡每張臉一個 96×96 小塊，一次送一批；要有 model/mouth_patch_ens3.onnx
   slot：只做最後一步（不跑 RTMO）——每床鏡頭只拍一個寶寶，找人那步可能省得掉，量看看省多少
         （注意：這個組合還沒跑過準確率評估，數字只代表運算量）
 
@@ -23,6 +25,7 @@ CPU 多路負載測試：一台主機最多能同時判讀幾支每床鏡頭？�
 用法：
     uv run python -m evaluation.bench_multistream                         # 720p、1080p 都跑，W = 1 2 4 8 12 16
     uv run python -m evaluation.bench_multistream --res 720 --workers 1 8 --sec 10   # 試跑
+    FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --modes full v6 --res 720 --workers 1 4 8
     FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef \
         uv run python -m evaluation.bench_multistream --threads --modes full --workers 1 2 4 8
     FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --modes full \
@@ -55,6 +58,7 @@ VIDEO = ROOT / "dataset" / "doll_video" / "IMG_8115.MOV"
 OUT_DIR = ROOT / "outputs" / "bench"
 N_FRAMES = 40          # 從影片平均取這麼多幀，輪流餵給模型
 WHOLE = (0.0, 0.0, 1.0, 1.0)
+_MOUTH = []            # v6 的口鼻小塊模型（第一次用到才載；多程序時各自載，載入時已套用 limit_threads）
 
 
 def limit_threads(n):
@@ -114,6 +118,20 @@ def process(run_pose, detector, frame, mode, timing=None):
 
     t = time.perf_counter()
     visible = False
+    if mode == "v6":
+        from pipeline import infant_face_v4, infant_face_v6
+        if not _MOUTH:
+            _MOUTH.append(infant_face_v6.load_mouth_model(required=True))
+        persons = make_persons(run_pose(frame))
+        t = tick("rtmo", t)
+        faces = infant_face_v4.detect_faces_v4(detector, frame, persons)   # 跟 full 的兩步一樣，多帶特徵點
+        t = tick("yunet_whole_head", t)
+        assign_faces(persons, faces)
+        found = slot_faces(detector, frame, WHOLE, 0)
+        t = tick("yunet_slot", t)
+        probs = _MOUTH[0].probs(frame, [f for p in persons for f in p["faces"]] + list(found))
+        tick("mouth", t)
+        return not any(q >= infant_face_v6.MOUTH_P_MIN for q in probs)
     if mode == "full":
         persons = make_persons(run_pose(frame))
         t = tick("rtmo", t)
@@ -228,7 +246,7 @@ def decode_fps(height, sec=10):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--res", type=int, nargs="+", default=[720, 1080], help="畫面高度（預設 720 1080）")
-    ap.add_argument("--modes", nargs="+", choices=["full", "slot"], default=["full", "slot"])
+    ap.add_argument("--modes", nargs="+", choices=["full", "v6", "slot"], default=["full", "slot"])
     ap.add_argument("--workers", type=int, nargs="+", default=[1, 2, 4, 8, 12, 16], help="同時跑幾個工作程序")
     ap.add_argument("--sec", type=float, default=20, help="每種設定跑幾秒（預設 20）")
     ap.add_argument("--repeat", type=int, default=2, help="延遲測試把測試幀跑幾輪（預設 2）")

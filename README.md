@@ -16,7 +16,8 @@ SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges l
 
 | Part | Status |
 | --- | --- |
-| Per-crib pipeline: pose → face → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
+| Per-crib pipeline: pose → face → mouth/nose check → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
+| Mouth/nose patch model (v6, the main pipeline since 2026-11-24) | Trained on one half of our own doll footage only; scored on the other half, on doll footage from a postpartum nursery's own camera and on real infant photos (see Results). Runs on the host CPU with ONNX Runtime (a few ms per face); not compiled for the chip yet |
 | Caregiving pause, empty-crib gray state | Prototype, tested on three per-crib doll clips (one is a normal pick-up) |
 | VLM second check (Qwen2-VL-2B) | Works as a laptop GPU experiment. Hailo's precompiled HEF also runs on the UGen300 (about 1 s per question, in the same process as the pipeline), but there it calls every side face "not visible", so it is **not usable on the chip yet** (see Hardware integration) |
 | Pose model (RTMO-m) on the Hailo-10H | **Runs on the UGen300 inside the pipeline.** Plain 8-bit quantization lost too much accuracy, so we retrained the network to tolerate 8-bit (quantization-aware training). On all three test sets the results match the original float model on the CPU |
@@ -34,7 +35,8 @@ flowchart LR
   head --> face["YuNet face detector"]
   host --> crib["Crib mode: search the whole crib,<br/>turned to its head direction"]
   crib --> face
-  face --> vis{"Nose and mouth<br/>visible?"}
+  face --> patch["Mouth/nose patch model:<br/>nose-to-chin crop of each face"]
+  patch --> vis{"Nose and mouth<br/>visible?"}
   vis --> state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray,<br/>no judgment = offline"]
   state --> nurse["Nurse-station screen<br/>+ silent text alert"]
   vlm["VLM second check<br/>(Stage II)"] -.->|can ask for a look, never cancels| state
@@ -50,19 +52,26 @@ Each step and where it lives in the code:
 3. **Crib mode.** A blanket over the body often hides the baby from the pose model while the face is still in view, so the
    crib area itself is also searched, turned to the crib's head direction (set once at installation). A face belongs to a
    crib by position. No face in the crib means nose and mouth are not visible. `pipeline/crib_detect.py` (`slot_faces`, `detect`)
-4. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
+4. **Check the nose and mouth (v6).** Finding a face does not prove the airway is uncovered: with a blanket up to the
+   eyes, a swaddle across the mouth, or an ear taken for a face, the face detector still returns a face. So each face
+   in the crib is turned upright with YuNet's five landmarks (eyes, nose tip, mouth corners) and a 96×96 crop from the
+   nose to the chin goes to a small model, three ResNet18s averaged, that gives the probability that the nose and mouth
+   are uncovered. The crib counts as visible only if at least one face scores 0.5 or more (a fixed threshold, never
+   tuned on evaluation data). The crop is sized by the eye-to-mouth distance, not the eye distance, so side faces work
+   too. `pipeline/infant_face_v6.py` (`mouth_patch`, `MouthModel`); the crib-level rule is `v6_slot` in `pipeline/crib_detect.py`
+5. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
    face must last 1 s before it resets the timer, so one false face does not restart the count. `CribState` pauses the
    timer while an adult's hand moves at the crib edge, and turns an empty crib gray when it matches the crib's empty
    reference photo. Motion never clears an alert that is already sounding. `Liveness` turns a crib purple ("offline,
    check this crib in person") when no judgment has finished for 2 s or the last one failed, instead of leaving the
    last light (possibly green) on screen; when judgments come back after a gap, motion seen before the gap is
    discarded and the gap counts as hidden, so a covered face turns red at once. `pipeline/crib_state.py`
-5. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
+6. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
    the baby's nose and mouth?". It can raise a yellow "please look", or rank red alerts, but never cancel one: its answer
-   flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`. A small classifier trained on our own doll
-   footage, reading the same rotated head crop YuNet sees, is the alternative we are testing: `experiments/airway_train.py`
+   flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`. It is not in the main pipeline; the mouth/nose
+   patch model (step 4) does that job on every frame
 
-**Key design choice:** a face detector decides whether the face is visible, not the pose model's keypoint confidence.
+**Key design choice:** a face detector (and then the mouth/nose patch model) decides whether the face is visible, not the pose model's keypoint confidence.
 Keypoint confidence is trained on "was this point annotated", not "can it be seen": a baby with its face in the sheet
 still gets confident nose and eye keypoints. The pose model says where each person and head is; the face detector says
 whether the face can be seen.
@@ -72,7 +81,7 @@ whether the face can be seen.
 | Runs on | What |
 | --- | --- |
 | ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m and YuNet, both running in the pipeline; the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
-| Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), per-crib state machines, event log |
+| Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), the mouth/nose patch model (ONNX Runtime), per-crib state machines, event log |
 
 - **HEF compilation** ([`hailo/結果.md`](./hailo/結果.md), plan in [`hailo/轉換計畫.md`](./hailo/轉換計畫.md)):
   YuNet compiles to a Hailo-10H HEF (Dataflow Compiler 5.4.0, target `hailo10h`, 3 contexts), with its raw outputs
@@ -136,6 +145,11 @@ whether the face can be seen.
   most of the CPU free for decoding the camera streams, which the hybrid uses up. Per model (`hailortcli run2`,
   random input): RTMO-m 58 FPS at batch 1 and 95 at batch 8 (17 ms on the chip, 31 ms including USB); YuNet 221 FPS.
   The UGen300 does not report power or current; we will measure power with a USB-C meter.
+- **Cost of the mouth/nose patch model (v6)**, measured on the CPU only so far (`bench_multistream --modes full v6`,
+  720p, same frames): one ONNX Runtime call per frame for all faces in the crib, about 8 ms when a face is found and
+  nothing when none is; one crib alone 175 → 189 ms per frame, 8 processes together 8.5 → 8.3 frames per second. The
+  on-chip numbers above were measured before v6 and have not been re-measured with it; with RTMO-m on the chip the host
+  CPU is already the limit, so expect somewhat fewer than 30 cribs.
 - **USB disconnects and recovery:** now and then the UGen300 drops off USB and comes back by itself
   (`HAILO_COMMUNICATION_CLOSED`; Windows logs each drop as Kernel-PnP event 1010 for `USB\VID_0B05&PID_1D6F`, and the
   log matches every disconnect our scripts saw). With YuNet on the chip it happens every few minutes with 8 cribs
@@ -186,7 +200,37 @@ whether the face can be seen.
 
 These are proxies: real infant photos taken at home, dolls, and simulations. There is no real nursery data yet.
 
-| Test | Result (v3, the baseline) |
+### Main pipeline (v6) on data it was not trained on
+
+Doll videos use the 3-second rule at 5 frames per second, each labelled segment scored once. The threshold (0.5) was
+fixed before any of these runs.
+
+| Test | v3 + crib mode | v4 + crib mode | **v6 + crib mode** |
+| --- | --- | --- | --- |
+| Doll videos, held-out half (27 videos): danger segments caught / safe segments with a false alert | 22/25, 9/34 | 23/25, 11/34 | **25/25**, 10/34 |
+| Doll videos recorded on a postpartum nursery's own per-crib camera (3 videos; that doll and camera were never trained on): caught / false alert | 3/10, 0/6 | 8/10, 0/6 | **9/10**, 0/6 |
+| Same 3 videos: nose and mouth uncovered but turned away from the camera (the centre wants a reminder), alerted | 1/4 | 1/4 | **3/4** |
+| Doll photos, batch 1 (per doll, no crib mode): hidden and alerted / visible with a false alert | 59/68, 2/39 | 62/68, 2/39 | 62/68, **4/39** |
+| Real infant photos (SyRIP), nursery-like subset (81 found): false alerts | 5 | 8 | 9 |
+| SyRIP, a hand over the mouth and nose (10): alerted | 1 | 1 | **4** |
+| SyRIP, nose and mouth hidden (72): alerted | 71 | 71 | 72 |
+| SyRIP, every posture, nose and mouth visible (537): false alerts | 6.0% | 10.4% | **26.3%** |
+
+- On the nursery camera v6 adds a swaddle beside the face that covers the mouth (23% of frames judged hidden with v4,
+  94% with v6) and two side-lying, slightly face-down segments. Its one miss is a prone segment (96% of frames hidden,
+  but not alerting at the segment's last moment; v4 misses it too).
+- 24 of the 27 held-out videos show the same doll and crib as training videos, posed again; their 4 false alerts are
+  side faces the face detector does not find at all, which v6 cannot fix.
+- SyRIP's "nursery-like" subset was fixed image by image before scoring: lying on the back, face visible, no adult hand
+  in the picture, one baby alone, and a face large enough (eye-to-mouth ≥ 46 px, about the size on a 1080p per-crib
+  camera); pacifiers and toys in the mouth are left out, a hand over the mouth counts as danger. Most of v6's false
+  alerts over all 537 images are older babies sitting, crawling or standing with the face turned away, which a
+  postpartum nursery does not have; on the nursery-like subset v6 still raises one more than v4 (crying with the mouth
+  wide open, strong light on the face). We adopted v6 for the stronger catch rate on doll footage and the nursery camera.
+
+### Earlier results
+
+| Test | Result (v3, the base v6 builds on) |
 | --- | --- |
 | Real infant photos (SyRIP, 700 images, manually relabelled; internal use only) | 97.7% of infants found; 6.1% false alerts when the face is visible; 98.6% alerted when it is hidden |
 | Doll photos (114 photos, 185 dolls, scored per doll) | Face-down 25/25 alerted; 4.4% false alerts; crib mode lifts alert recall from 62% to 90% |
@@ -208,11 +252,18 @@ Install [uv](https://docs.astral.sh/uv/), then from the repository root:
 
 ```bash
 uv sync
-uv run python -m pipeline.infant_face_v3 your_photo.jpg
+uv run python -m pipeline.infant_face_v6 your_photo.jpg   # main pipeline; needs model/mouth_patch_ens3.onnx
+uv run python -m pipeline.infant_face_v3 your_photo.jpg   # without the mouth/nose model (works out of the box)
 ```
 
 `uv sync` installs about 200 MB and no PyTorch. The first run downloads RTMO-m (about 80 MB). The result is saved to
-`outputs/your_photo_v3.jpg`: red box = face not visible (alert), green = visible, yellow = detected face.
+`outputs/your_photo_v6.jpg` (or `_v3.jpg`): red box = nose and mouth not visible (alert), green = visible, yellow =
+detected face, orange (v6) = face found but its nose and mouth judged covered, with the model's probability.
+
+The mouth/nose patch model (`model/mouth_patch_ens3.onnx`, 134 MB) is not in the repository, like the other weights;
+it is available from the team, and the four `experiments/mouth_patch_*` scripts rebuild it from our doll footage
+(see "Mouth/nose patch model" below). Set `FG_MOUTH_ONNX` to use another path. Without it, `eval_video` compares
+v3–v5 only, and `demo.live_view` / `experiments.rtsp_check` need `--mode v3_slot`.
 
 Every script runs from the repository root as a module (`python -m folder.script`).
 
@@ -222,14 +273,17 @@ The datasets are not in the repository (licensing and privacy): our doll photos 
 SyRIP from its authors. Results are written to `outputs/`.
 
 ```bash
-uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts (no names = every labelled video, incl. the 11/08 batch)
+uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts (no names = every labelled video, incl. the 11/08 batch);
+                                                     # adds v6 when the patch model is present and prints v6's score on the videos it was not trained on last
 uv run python -m evaluation.eval_video --reuse --on 2  # recompute with another alert rule, no new detection
 uv run python -m evaluation.crib_context             # caregiving pause + empty crib (run eval_video first)
 uv run python -m evaluation.eval_doll --det-th 0.15 --batch 1,2,3   # doll photos, scored per doll (the 185-doll results above)
 uv run python -m evaluation.eval_doll --det-th 0.15 --batch 4       # the 11/08 batch (one care-training doll), reported separately
-uv run python -m evaluation.eval_syrip --face v3     # real infant photos (dataset/SyRIP_Posture.zip)
-uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels
-uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles
+uv run python -m evaluation.eval_doll --face v6 --det-th 0.15 --batch 1   # v6: batches 2-4 are its training data, so only batch 1 counts
+uv run python -m evaluation.eval_syrip --face v6 --models rtmo   # real infant photos (dataset/SyRIP_Posture.zip); also --face v3, v4
+uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels (all 700 images)
+uv run python -m evaluation.syrip_nursery v3 v4 v6   # SyRIP nursery-like subset (the subset lists, like the relabels, are not in the repository)
+uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles (--modes full v6 for the patch model's cost)
 ```
 
 Add `--gray` and/or `--dim 0.3` to `eval_video`, `eval_doll` or `eval_syrip` to simulate an IR night view; those results go
@@ -250,7 +304,7 @@ uv run python -m evaluation.eval_video IMG_8735 --cctv daycare --fps 1    # resu
 ### Demo
 
 ```bash
-uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed
+uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed (v6; --mode v3_slot without the patch model)
 uv run python -m demo.live_view IMG_8432 --start 80 --fault error@90   # test the offline light: 5 s of failed judgments
 uv run python -m demo.demo_render IMG_8432 --start 80 --end 112   # single crib: camera + light + reasons
 uv run python -m demo.demo_render --grid              # nurse-station mock-up (8 cribs)
@@ -325,35 +379,47 @@ uv pip install --python .venv-vlm transformers accelerate bitsandbytes opencv-py
 .venv-vlm/Scripts/python -m experiments.vlm_spike IMG_8429 IMG_8432 --crop head   # head crops (run --prep-head in .venv first)
 ```
 
-### Mouth/nose classifier (experiment, PyTorch in the same `.venv-vlm`)
+### Mouth/nose patch model (v6): training and export (PyTorch in the same `.venv-vlm`)
 
 ```bash
-uv run python -m experiments.airway_crops              # RTMO head crops from our doll photos and videos (run eval_video first)
-.venv-vlm/Scripts/python -m experiments.airway_train   # train on the calibration half, score once on the held-out half
+uv pip install --python .venv-vlm safetensors onnx
+# pretrained weights: model.safetensors from https://huggingface.co/timm/resnet18.a1_in1k into model/pretrained/resnet18.a1_in1k/
+uv run python -m experiments.mouth_patch_crops --half calib --exclude-prefix 寶寶2      # 1. pick the frames, save head crops (cloth texture)
+uv run python -m experiments.mouth_patch_crops --half calib --prefix 寶寶2 --suffix _1123 --det-th 0.15
+uv run python -m experiments.mouth_patch_build calib                # 2. rerun the pipeline, save each face's nose-to-chin crop
+uv run python -m experiments.mouth_patch_build calib_1123
+.venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib calib_1123 --seed 0 --tag p_base_s0   # 3. also seeds 1 and 2
+.venv-vlm/Scripts/python -m experiments.mouth_patch_export p_base model/mouth_patch_ens3.onnx               # 4. three models -> one ONNX
 ```
 
-Both halves follow `hailo/prep_calib.py` (`SPLITS`, split by whole video and photo batch). Only the first half is ever
-used for training; the threshold stays at 0.5 and is not tuned on the held-out half. The first run downloads
-torchvision's ImageNet-pretrained ResNet18 weights.
+Training data is our own doll footage only: the calibration half of `hailo/prep_calib.py` (`SPLITS`, split by whole
+video and photo batch; 2,550 faces), including a side-sleeping angle sequence labelled in `labels/train_20261119.csv`.
+Faces in frames where the nose and mouth are visible are positives; faces the detector still finds in covered or
+turned-away frames are negatives; a quarter of the positives get a piece of cloth pasted over the nose and mouth and
+become negatives. No real infant image, no SyRIP image and nothing from the web is used for training. The held-out half
+and the nursery recordings are only scored, and the 0.5 threshold is not tuned on them. An earlier classifier that read
+the whole head crop (`experiments/airway_crops.py`, `airway_train.py`) was not adopted.
 
 ## Repository layout
 
 ```
 pipeline/       the per-crib pipeline (the part that runs on the edge box)
-  infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (baseline)
-  infant_face_v4.py   experiment: v3 + mouth-skin check
-  infant_face_v5.py   experiment: v4 + three face levels (ok / warn / alert)
+  infant_face_v6.py   main pipeline: v3 + mouth/nose patch model (nose-to-chin crop of each face, ONNX Runtime)
+  infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (v6 builds on it)
+  infant_face_v4.py   for comparison: v3 + mouth-skin check
+  infant_face_v5.py   for comparison: v4 + three face levels (ok / warn / alert)
   face_common.py      thresholds, YuNet face search, matching faces to people, drawing
-  crib_detect.py      one frame: is the face visible in each crib (crib mode)
+  crib_detect.py      one frame: are the nose and mouth visible in each crib (crib mode; MAIN_MODE = v6_slot)
   crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib, offline
 evaluation/     evaluation scripts and their helpers (label loading, simulated night view, simulated CCTV footage)
 demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
 experiments/    earlier versions (v1, v2) and exploratory spikes kept for comparison, including the VLM second check
-                (vlm_spike.py) and the mouth/nose classifier (airway_crops.py, airway_train.py)
+                (vlm_spike.py), the training scripts of the mouth/nose patch model (mouth_patch_*.py) and the
+                earlier head-crop classifier (airway_crops.py, airway_train.py)
 hailo/          HEF conversion (calibration, compile, quantization-aware training, emulator and on-chip comparison,
                 host-side decoders, HailoRT runner, VLM runner, USB stress test), plan and results
-labels/         our annotations: doll photos, crib areas and timelines for the doll videos
-model/          YuNet face detector (MIT); other weights download on first run
+labels/         our annotations: doll photos, crib areas and timelines for the doll videos, one training-only sequence
+model/          YuNet face detector (MIT); RTMO-m downloads on first run; the mouth/nose patch model and HEF files are not included
 docs/           technical write-up and test reports (Chinese)
 ```
 
@@ -368,10 +434,14 @@ docs/           technical write-up and test reports (Chinese)
 ## Known limitations
 
 - No real newborns or real nursery footage yet; every number above comes from a proxy.
-- When the head turns away, YuNet can take an ear for a face, so a hidden airway stays green. The VLM check flags
-  these frames on the laptop GPU (13/13 on the doll clips), but on the UGen300 it is not accurate enough yet. The
-  trained mouth/nose classifier flags 64 of 67 such frames, but until we film more side faces for its training half it
-  also flags babies lying on their side with the face visible.
+- The mouth/nose patch model is trained on dolls only. Crying with the mouth wide open, strong light on the face and
+  side faces of dolls it has not seen are gaps in its training data; on the nursery-like real infant photos it raises
+  one more false alert than the skin check (v4), and on older infants who sit, crawl or stand it raises many more.
+  Real newborns need an ethics-approved pilot (IRB) first.
+- The patch model only judges faces the detector finds. When YuNet misses a side face, the crib still counts as not
+  visible (false alert), and v6 cannot undo that.
+- The patch model runs on the host CPU; it is not compiled for the Hailo-10H yet, and the whole pipeline with it has
+  not been timed on the chip.
 - A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
 - Night (IR) footage is only simulated, and grayscale raises false alerts.
 - The UGen300 drops off USB now and then (every few minutes with YuNet on the chip under load; with RTMO-m alone a few

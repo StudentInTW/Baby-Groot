@@ -1,7 +1,7 @@
 """
 live_view.py
 筆電即時判讀（給影片「真的在跑」那一段錄螢幕用）：讀一支每床鏡頭的娃娃影片，按影片原速播放，同時即時跑
-v3＋床位判讀（每秒 FPS 幀，crib_detect.detect()）和床位情境狀態機（crib_state.CribState：照護中暫停計時、空床灰燈），
+主流程 v6＋床位判讀（每秒 FPS 幀，crib_detect.detect()；--mode 可換回 v3_slot 等對照）和床位情境狀態機（crib_state.CribState：照護中暫停計時、空床灰燈），
 用 OpenCV 視窗顯示：左邊鏡頭畫面＋臉框＋燈號外框，右邊燈號與判斷依據，右上角是每幀處理毫秒數、目前判讀 FPS、在什麼硬體上跑。
 
 不是事先算好的：不讀 outputs/ 的任何東西，每一幀都是當下才算（床位特徵也是逐幀算，見 crib_state.EdgeFeatures）。
@@ -34,7 +34,7 @@ from PIL import Image, ImageDraw
 from demo import demo_render
 from demo.demo_render import PRODUCT, STATES, font, wrap
 from evaluation import crib_context, video_labels
-from pipeline import crib_detect, crib_state, infant_face_v3, infant_face_v5
+from pipeline import crib_detect, crib_state, infant_face_v3, infant_face_v5, infant_face_v6
 from pipeline.face_common import FACE_SCORE_TH, create_face_detector
 
 FPS = crib_context.FPS  # 每秒判讀幾幀（跟 eval_video.py、crib_context.py 一樣）
@@ -217,7 +217,8 @@ class Analyzer(threading.Thread):
             tic = time.perf_counter()
             try:
                 self.inject_fault(t)
-                result, _, faces = crib_detect.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots)
+                result, _, faces = crib_detect.detect(self.run_pose, self.det, self.det_v5, frame, self.slots, self.rots,
+                                                      mouth=self.args.mouth)
             except Exception as e:   # 晶片重開、重送之後還是失敗等：這床離線，等下一幀再試；狀態機不動
                 self.live.fail(e)
                 self.errors += 1
@@ -226,7 +227,7 @@ class Analyzer(threading.Thread):
                 with self.cond:
                     self.busy = False
                 continue
-            hidden = result[self.doll]["v3_slot"] == "hidden"
+            hidden = result[self.doll][self.args.mode] == "hidden"
             if self.last_t is not None and t - self.last_t > crib_state.OFFLINE_AFTER:
                 # 這一幀跟上一次判讀的幀隔太久（中間離線）：用畫面時間判斷，因為卡住時那一幀是卡住前送進來的，
                 # 恢復後的「下一幀」才是隔了十幾秒的那一幀
@@ -263,6 +264,8 @@ def main():
     ap.add_argument("--width", type=int, default=1600, help="視窗寬度（高度＝寬度×9/16）")
     ap.add_argument("--save", help="同時把視窗畫面存成影片（.mp4）")
     ap.add_argument("--no-window", action="store_true", help="不開視窗（搭配 --save 用）")
+    ap.add_argument("--mode", default=crib_detect.MAIN_MODE, choices=crib_detect.MODES_V6[1:],
+                    help=f"燈號依哪一種判定（預設主流程 {crib_detect.MAIN_MODE}，要有口鼻小塊模型檔；沒有的話用 v3_slot）")
     ap.add_argument("--fault", nargs="*", metavar="種類@秒",
                     help="測試離線狀態：影片第幾秒製造故障，可以給好幾個。error＝判讀連續出錯 5 秒（不用晶片）；"
                          "kill＝砍掉晶片子程序；hang＝暫停晶片子程序（後兩個要 FG_CHIP_PROCESS=1）")
@@ -272,11 +275,12 @@ def main():
     if len(ann["slots"]) != 1:
         raise SystemExit(f"{args.video} 一個畫面有 {len(ann['slots'])} 個床位；這支只處理每床鏡頭（一個畫面一張床）")
     doll, slot = next(iter(ann["slots"].items()))
-    print("載入模型（RTMO、YuNet）…")
+    print("載入模型（RTMO、YuNet" + ("、口鼻小塊模型" if args.mode == "v6_slot" else "") + "）…")
     infant_face_v3.DET_TH = args.det_th
     run_pose = infant_face_v3.load_rtmo()
     det = create_face_detector(FACE_SCORE_TH)
     det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
+    args.mouth = infant_face_v6.load_mouth_model(required=True) if args.mode == "v6_slot" else None
     slots, rots = {doll: slot["rect"]}, {doll: slot["rot"]}
 
     cap = cv2.VideoCapture(str(video_labels.find_video(args.video)))

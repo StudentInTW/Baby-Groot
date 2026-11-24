@@ -40,10 +40,12 @@ SOFTWARE.
 | RTMO-m, YOLOX-m, RTMPose-m (OpenMMLab / MMPose ONNX weights) | Pose estimation; downloaded by rtmlib on first run | Apache-2.0 |
 | [rtmlib](https://github.com/Tau-J/rtmlib) | Runs the pose models | Apache-2.0 |
 | OpenCV (`opencv-python`) | Image and video I/O, YuNet inference | Apache-2.0 (OpenCV), MIT (packaging) |
-| ONNX Runtime | Inference backend for rtmlib | MIT |
+| ONNX Runtime | Inference backend for rtmlib and for the mouth/nose patch model | MIT |
+| [`timm/resnet18.a1_in1k`](https://huggingface.co/timm/resnet18.a1_in1k) pretrained weights | Starting point of the v6 mouth/nose patch model (`experiments/mouth_patch_train.py`); the trained model `model/mouth_patch_ens3.onnx` is not in this repository | Apache-2.0 (model card) |
+| PyTorch, torchvision, safetensors, onnx | Training and exporting the mouth/nose patch model (separate `.venv-vlm` environment); the pipeline runs the exported ONNX file without them | BSD-3-Clause (PyTorch, torchvision), Apache-2.0 (safetensors, onnx) |
 | Pillow | Image handling | MIT-CMU |
 | Qwen2-VL-2B-Instruct | Experimental VLM second check (`experiments/vlm_spike.py`, separate environment) | Apache-2.0 |
-| PyTorch, torchvision and torchvision's ImageNet-pretrained ResNet18 weights | Experimental mouth/nose classifier (`experiments/airway_train.py`, separate environment); not part of the pipeline | PyTorch and torchvision: BSD-3-Clause. The weights have no separate licence; torchvision notes that pretrained weights may be subject to the terms of their training data (ImageNet allows non-commercial use only). Whether a model fine-tuned from them can ship is still open |
-| Ultralytics YOLOv8 (optional `yolo` dependency group) | Only the early v1/v2 scripts and the YOLOv8 comparison in `evaluation/eval_syrip.py`; not part of the v3 pipeline | AGPL-3.0 |
+| torchvision's ImageNet-pretrained ResNet18 weights | Earlier head-crop classifier experiment (`experiments/airway_train.py`); not part of the pipeline | PyTorch and torchvision: BSD-3-Clause. The weights have no separate licence; torchvision notes that pretrained weights may be subject to the terms of their training data (ImageNet allows non-commercial use only). Whether a model fine-tuned from them can ship is still open |
+| Ultralytics YOLOv8 (optional `yolo` dependency group) | Only the early v1/v2 scripts and the YOLOv8 comparison in `evaluation/eval_syrip.py`; not part of the pipeline | AGPL-3.0 |
 
 Compiled Hailo files (`.hef`, `.har`) are not included; see [`hailo/結果.md`](hailo/結果.md).

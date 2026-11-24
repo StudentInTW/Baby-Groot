@@ -1,15 +1,18 @@
 """
 pipeline/crib_detect.py
 每床判讀的一幀：每個床位裡的嬰兒口鼻看不看得到。eval_video.py、live_view.py、demo_render.py、
-bench_multistream.py 都用這支，評估和示範跑的是同一段程式。
+bench_multistream.py、experiments/rtsp_check.py 都用這支，評估、示範和現場判讀跑的是同一段程式。
 
 床位：安裝時框好的範圍（畫面比例座標）和方向 rot（把床位轉正要轉幾度）。頭在框裡的人就算這個床位。
-四種判定一起算（狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人）：
+幾種判定一起算（狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人）：
   v3        床位裡偵測到人、那個人找不到臉 → 看不到口鼻；床位裡沒偵測到人 → 不警示（v3 本來的行為）
   v3＋床位  床位模式（docs/娃娃測試結果.md §4）：除了透過人找臉，也直接在床位範圍依床位方向轉正後找臉
-            ——身體被被子蓋住、姿態模型找不到人時，臉露出來還是找得到。床位裡找不到臉就算看不到口鼻。（基準）
-  v4＋床位  再加口鼻檢查（infant_face_v4.py，實驗版）
-  v5＋床位  臉分三級 ok／warn／alert（infant_face_v5.py，實驗版）
+            ——身體被被子蓋住、姿態模型找不到人時，臉露出來還是找得到。床位裡找不到臉就算看不到口鼻。
+  v4＋床位  再加口鼻膚色檢查（infant_face_v4.py，對照用）
+  v5＋床位  臉分三級 ok／warn／alert（infant_face_v5.py，對照用）
+  v6＋床位  主流程（2026/11/24 起，MAIN_MODE）：口鼻小塊模型取代 v4 的膚色門檻（infant_face_v6.py）——
+            床位裡的臉（v3＋床位那些）任一張「口鼻露出」機率 ≥ 0.5 才算看得到。
+            要傳 mouth（infant_face_v6.load_mouth_model()）才算，沒傳就不出現這一欄（模型檔不在 repo 裡，見 README）。
 警示狀態機（連續 3 秒看不到才警示）在 crib_state.py。
 """
 
@@ -20,11 +23,19 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # 要在 import cv2 前設
 import cv2
 import numpy as np
 
-from pipeline import infant_face_v4, infant_face_v5
+from pipeline import infant_face_v4, infant_face_v5, infant_face_v6
 from pipeline.face_common import assign_faces
 from pipeline.infant_face_v3 import make_persons
 
 MODES = ("v3", "v3_slot", "v4_slot", "v5_slot")
+MODES_V6 = MODES + ("v6_slot",)   # 有口鼻小塊模型時（detect 的 mouth）
+MAIN_MODE = "v6_slot"   # 主流程的判定（燈號、警示都看這一欄）；2026/11/24 從 v3_slot 換成 v6（Harry 定）
+FALLBACK_MODE = "v3_slot"   # 沒有口鼻小塊模型、或讀到舊的每幀判定（沒有 v6_slot 欄）時
+
+
+def main_mode(row):
+    """這一列（detect 的結果或 eval_video 存的每幀判定）要看哪一欄：有 v6_slot 就用，沒有就退回 v3_slot。"""
+    return MAIN_MODE if row.get(MAIN_MODE) else FALLBACK_MODE
 SLOT_INPUT = 640    # 床位範圍縮到長邊這麼多像素再找臉
 SLOT_FACE_TH = 0.8  # 床位範圍找到的臉要多高分才算（跟 v3 頭部裁切一樣：裁切後比較容易把抱枕圖案看成臉）
 ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
@@ -81,8 +92,8 @@ def slot_pose(run_pose, slots):
     return run
 
 
-def detect(run_pose, detector, det_v5, frame, slots, rots):
-    """一幀：回傳每個床位在四種判定下的狀態，和畫圖用的偵測結果。
+def detect(run_pose, detector, det_v5, frame, slots, rots, mouth=None):
+    """一幀：回傳每個床位在四種判定下的狀態（有 mouth 再加 v6，五種），和畫圖用的偵測結果。
     狀態：visible 看得到口鼻／hidden 看不到／none 床位裡沒偵測到人（只有 v3 會出現）。
     v5 額外輸出三級 tier（ok 正臉／warn 側臉／alert）；binary 狀態把 ok、warn 都當 visible（不硬警示）。"""
     h, w = frame.shape[:2]
@@ -129,4 +140,9 @@ def detect(run_pose, detector, det_v5, frame, slots, rots):
             "mouth_skin": " ".join(f"{f.skin:.2f}" for i in inside for f in persons[i]["faces"] + persons[i]["covered"]
                                    ) + ("｜" + " ".join(f"{f.skin:.2f}" for f in found) if found else ""),
         }
+        if mouth is not None:   # v6：v3＋床位的那些臉（人身上落在床位裡的＋直接在床位找到的），任一張口鼻露出
+            cand = [f for fs in v3_faces for f in fs if face_in_slot(f)] + list(found)
+            probs = mouth.probs(frame, cand)
+            result[doll]["v6_slot"] = "visible" if any(q >= infant_face_v6.MOUTH_P_MIN for q in probs) else "hidden"
+            result[doll]["mouth_p"] = " ".join(f"{q:.2f}" for q in probs)
     return result, persons, faces + extra
