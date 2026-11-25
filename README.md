@@ -17,7 +17,7 @@ SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges l
 | Part | Status |
 | --- | --- |
 | Per-crib pipeline: pose → face → mouth/nose check → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
-| Mouth/nose patch model (v6, the main pipeline since 2026-11-24) | Trained on one half of our own doll footage only; scored on the other half, on doll footage from a postpartum nursery's own camera and on real infant photos (see Results). Runs on the host CPU with ONNX Runtime (a few ms per face); not compiled for the chip yet |
+| Mouth/nose patch model (v6, the main pipeline since 2026-11-24) | Trained on one half of our own doll footage only; scored on the other half, on doll footage from a postpartum nursery's own camera and on real infant photos (see Results). Runs on the host CPU with ONNX Runtime by default (one thread, about 19 ms per face). **Also compiled for the Hailo-10H (every layer 8-bit) and runs on the UGen300** (set `FG_MOUTH_HEF`). With it and RTMO-m on the chip, the 30 held-out doll videos give the CPU's results except one extra false alert, which comes from RTMO-m. With only this model on the chip, doll photos are unchanged, and SyRIP's 81 nursery-like photos get 2 more false alerts (11 vs 9). With 16 cribs, measured side by side (laptop on AC power), the pipeline runs 31.1–31.3 frames per second with this model on the chip and 29.6 with it on the CPU, against 31.0–31.4 without it |
 | Caregiving pause, empty-crib gray state | Prototype, tested on three per-crib doll clips (one is a normal pick-up) |
 | VLM second check (Qwen2-VL-2B) | Works as a laptop GPU experiment. Hailo's precompiled HEF also runs on the UGen300 (about 1 s per question, in the same process as the pipeline), but there it calls every side face "not visible", so it is **not usable on the chip yet** (see Hardware integration) |
 | Pose model (RTMO-m) on the Hailo-10H | **Runs on the UGen300 inside the pipeline.** Plain 8-bit quantization lost too much accuracy, so we retrained the network to tolerate 8-bit (quantization-aware training). On all three test sets the results match the original float model on the CPU |
@@ -80,8 +80,8 @@ whether the face can be seen.
 
 | Runs on | What |
 | --- | --- |
-| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m and YuNet, both running in the pipeline; the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
-| Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), the mouth/nose patch model (ONNX Runtime), per-crib state machines, event log |
+| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | RTMO-m and YuNet, both running in the pipeline; the mouth/nose patch model (with `FG_MOUTH_HEF`; evaluated in the pipeline, see below); the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
+| Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), the mouth/nose patch model by default (ONNX Runtime), per-crib state machines, event log |
 
 - **HEF compilation** ([`hailo/結果.md`](./hailo/結果.md), plan in [`hailo/轉換計畫.md`](./hailo/轉換計畫.md)):
   YuNet compiles to a Hailo-10H HEF (Dataflow Compiler 5.4.0, target `hailo10h`, 3 contexts), with its raw outputs
@@ -109,6 +109,26 @@ whether the face can be seen.
   results do not change (next bullet). Variants with the first three layers in 16-bit place keypoints more precisely
   but run at half the speed and did not improve the pipeline, so we use the all-8-bit network. Details, per-layer
   analysis and every run are in `hailo/結果.md`.
+  The mouth/nose patch model (three ResNet18s, 33.5 M parameters) compiles too: 23 MB, 4 contexts, every layer 8-bit.
+  `experiments/mouth_patch_export.py --hailo` exports a version with the ImageNet normalization moved into the model
+  script (the chip takes the 96×96 BGR patch as is) and the three logits as outputs; the host averages them. It is
+  calibrated on 1,024 patches from the training half only. On 2,437 held-out patches the quantized model's "mouth and
+  nose visible" probability differs from ONNX by 0.012 (median) and 74 patches flip at the 0.5 threshold: 71 of the
+  1,473 from the nursery camera, 2 of the 840 from our own held-out footage. Most flips go from visible to not visible,
+  so the risk is more false alerts rather than missed dangers. The compiler's own fine-tuning (optimization level 2)
+  made it worse (392 flips), so we keep level 0. In the pipeline:
+
+  | v6 | Everything on the CPU | Mouth/nose model on the UGen300 | RTMO-m and mouth/nose model on the UGen300 |
+  | --- | --- | --- | --- |
+  | Doll videos not trained on (30), crib mode: danger caught / safe with a false alert / blind spot alerted | 34/35, 10/40, 10/13 | — | 34/35, 11/40, 10/13 |
+  | Doll photos not trained on (110 dolls): hidden alerted / visible with a false alert | 62/68, 4/39 | 62/68, 4/39 | 60/68, 4/39 |
+  | SyRIP nursery-like supine, face visible (81): false alerts | 9 | 11 | 10 of 80 |
+  | SyRIP all postures, face visible (537): false alerts; hidden (72): alerted | 141, 72/72 | 154, 72/72 | 157 of 540, 74/74 |
+
+  On the videos the only change is one false alert on a side face whose head crop moved with RTMO-m on the chip; every
+  segment of the nursery-camera videos matches, because the 3-second rule absorbs the frames that flip. With only the
+  mouth/nose model on the chip every doll photo matches the CPU, so the differences in the last column come from
+  RTMO-m. On SyRIP the 8-bit model adds a few false alerts and misses no hidden face. Details in `hailo/結果.md`.
 - **On the UGen300** (HailoRT 5.4.0 on Windows over USB, setup in [`hailo/安裝筆記.md`](./hailo/安裝筆記.md)):
   `hailo/hailo_infer.py` wraps HailoRT's Python API, and with `FG_RTMO_HEF` set the pipeline runs RTMO-m's network on
   the chip and its post-processing on the host (`pipeline/infant_face_v3.py`, `load_rtmo`). The chip's outputs match
@@ -145,11 +165,43 @@ whether the face can be seen.
   most of the CPU free for decoding the camera streams, which the hybrid uses up. Per model (`hailortcli run2`,
   random input): RTMO-m 58 FPS at batch 1 and 95 at batch 8 (17 ms on the chip, 31 ms including USB); YuNet 221 FPS.
   The UGen300 does not report power or current; we will measure power with a USB-C meter.
-- **Cost of the mouth/nose patch model (v6)**, measured on the CPU only so far (`bench_multistream --modes full v6`,
-  720p, same frames): one ONNX Runtime call per frame for all faces in the crib, about 8 ms when a face is found and
-  nothing when none is; one crib alone 175 → 189 ms per frame, 8 processes together 8.5 → 8.3 frames per second. The
-  on-chip numbers above were measured before v6 and have not been re-measured with it; with RTMO-m on the chip the host
-  CPU is already the limit, so expect somewhat fewer than 30 cribs.
+- **Cost of the mouth/nose patch model (v6).** With everything on the CPU (`bench_multistream --modes full v6`, 720p,
+  same frames, one process per crib): one ONNX Runtime call per frame for all faces in the crib, about 8 ms when a face
+  is found (ONNX Runtime's default threads) and nothing when none is; one crib alone 175 → 189 ms per frame, 8
+  processes together 8.5 → 8.3 frames per second. Compiled for the chip, the model itself takes 3.1 ms per patch (`hailortcli run2`, random input: 274 patches
+  per second at batch 1, 1,036 at batch 8); from Python, 16 patches sent together cost 4.0 ms each including USB
+  transfer. In the pipeline with RTMO-m on the chip (`bench_multistream --threads --modes full v6`, YuNet on the CPU,
+  laptop on AC power, both placements measured back to back):
+
+  | Cribs at once | 1 | 4 | 8 | 16 |
+  | --- | --- | --- | --- | --- |
+  | Without the mouth/nose model (`full`, two runs), frames per second | 9.3–9.5 | 22.6–22.8 | 26.3–27.8 | 26.6–27.6 |
+  | v6, mouth/nose model on the CPU | 8.6 | 16.9 | 19.2 | 19.9 |
+  | v6, mouth/nose model on the UGen300 | 9.1 | 22.6 | 27.8 | 28.5 |
+
+  On the CPU the model costs 28% of the throughput with 16 cribs (at 1 frame per second per crib, about 19 cribs
+  instead of 27); on the chip it costs nothing measurable. A run earlier the same evening on battery was slower
+  throughout but showed the same pattern (16 cribs: 22.5 without the model, 14.5 with it on the CPU, 22.5 on the chip).
+  These runs feed frames that are already decoded; decoding the camera streams needs the host CPU as well.
+
+  Most of that CPU cost came from ONNX Runtime's default threading: every call spreads over all cores and competes
+  with the other cribs' threads. With the mouth/nose session limited to one thread (`intra_op_num_threads=1`),
+  alternating runs gave 28.8–29.0 instead of 22.5–23.2 frames per second with 16 cribs, and one crib was about 3%
+  slower. Since 2026-11-25 the pipeline uses one thread for this model (`MOUTH_ORT_THREADS` in
+  `pipeline/infant_face_v6.py`). Its outputs are bit-identical to the default on all 4,990 saved patches (batches of
+  1 and 4), and re-running the three evaluations on the CPU gave the same results row for row (700 SyRIP photos,
+  185 dolls, 30 videos frame by frame). A call for one face takes 18.8 ms instead of 6.4 ms when only one crib runs, about a tenth more time per
+  frame for a crib with one face in view. Measured side by side the next morning (alternating runs, laptop on AC
+  power; the laptop was faster than the evening before, so compare within this table only):
+
+  | Cribs at once | 1 | 4 | 8 | 16 |
+  | --- | --- | --- | --- | --- |
+  | Without the mouth/nose model (`full`, four runs), frames per second | 11.1–11.3 | 27.0–27.9 | 31.2–31.7 | 31.0–31.4 |
+  | v6, mouth/nose model on the CPU (one thread, two runs) | 10.0–10.3 | 24.4–25.5 | 29.7–30.2 | 29.6 |
+  | v6, mouth/nose model on the UGen300 (two runs) | 10.7 | 26.4–26.6 | 31.5 | 31.1–31.3 |
+
+  With one thread the model costs about 5% of the throughput on the CPU and nothing measurable on the chip (at 1
+  frame per second per crib, about 29 cribs instead of 31).
 - **USB disconnects and recovery:** now and then the UGen300 drops off USB and comes back by itself
   (`HAILO_COMMUNICATION_CLOSED`; Windows logs each drop as Kernel-PnP event 1010 for `USB\VID_0B05&PID_1D6F`, and the
   log matches every disconnect our scripts saw). With YuNet on the chip it happens every few minutes with 8 cribs
@@ -160,6 +212,10 @@ whether the face can be seen.
   and 04:30, where the threads dropped 5 times in 1.6 hours, one frame at a time ran 3 hours over two nights without a
   drop. One frame at a time differs in two ways, fewer frames on the chip at once and a less busy chip (22 instead of
   29–30 frames per second), and we cannot tell which matters; the cause is not known (USB power, firmware or driver).
+  With the mouth/nose model on the chip as well (same child process, one frame at a time, 8 cribs running v6, laptop
+  on AC power the whole time), 8 hours overnight (2026-11-24 23:48 to 07:48) went without a drop: 593,831 frames,
+  19.9–20.7 frames per second in every minute, no restart, no error, nothing in the Windows log, and no crib more than
+  0.9 s without a judgment.
   With one thread,
   `hailo/hailo_infer.py` reconnects and resends within 1–3 s. With several threads, releasing the dead connection can
   deadlock inside pyHailoRT (its completion callbacks need the GIL that `VDevice.release()` holds), and one overnight
@@ -328,6 +384,11 @@ uv run python -m hailo.prep_calib --coco-dir hailo/calib/coco
 # 2. In WSL, inside the DFC virtualenv, from a folder without spaces in its path (e.g. ~/work)
 python "/mnt/c/<repo>/hailo/compile_hef.py" --model yunet --name yunet_A --calib coco.npy
 python "/mnt/c/<repo>/hailo/compare_yunet.py" --har yunet/yunet_A_quantized.har --data doll_hold.npy coco_hold.npy
+# Mouth/nose patch model (v6): export the DFC version (see "Mouth/nose patch model" below), then patches -> hailo/calib/
+.venv-vlm/Scripts/python -m experiments.mouth_patch_export p_base model/mouth_patch_ens3_hailo.onnx --hailo
+uv run python -m hailo.prep_calib --model mouth   # needs the patches saved by experiments.mouth_patch_build
+python "/mnt/c/<repo>/hailo/compile_hef.py" --model mouth --name mouth_A --calib mouth_calib.npy   # in WSL
+python "/mnt/c/<repo>/hailo/compare_mouth.py" --har mouth/mouth_A_quantized.har --data mouth_hold.npy
 ```
 
 ### Running on the UGen300 (HailoRT)
@@ -345,6 +406,7 @@ FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.eval_syrip --models rt
 FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef uv run python -m evaluation.eval_video   # both models on the chip
 uv run --with onnx python hailo/compare_rtmo.py --hef model/rtmo_D1.hef --data rtmo_doll_hold.npy --out outputs/hailo/onchip
 uv run python -m hailo.compare_yunet_chip model/yunet_A.hef       # YuNet on the chip vs OpenCV, same inputs
+uv run python -m hailo.mouth_hef model/mouth_A.hef --data mouth_hold.npy   # mouth/nose patch model on the chip vs ONNX
 uv run python -m hailo.stress_chip model/rtmo_D1.hef model/yunet_A.hef --sec 180   # USB disconnect stress test
 FG_RTMO_HEF=model/rtmo_D1.hef FG_YUNET_HEF=model/yunet_A.hef uv run python -m evaluation.bench_multistream --threads --res 720 --workers 1 2 4 8 16
 FG_CHIP_PROCESS=1 FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --threads --res 720 --workers 1 2 4 8 16   # chip in a child process (add FG_CHIP_BATCH=4 to batch the cribs)
@@ -356,7 +418,8 @@ FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --th
 ```
 
 In PowerShell set the variables first, e.g. `$env:FG_RTMO_HEF = "model/rtmo_D1.hef"; $env:FG_YUNET_HEF = "model/yunet_A.hef"`.
-Every evaluation and demo script accepts them. `bench_multistream --threads` runs the cribs as threads of one
+Every evaluation and demo script accepts them, and `FG_MOUTH_HEF` (e.g. `model/mouth_A.hef`) moves v6's mouth/nose
+patch model to the chip the same way (`hailo/mouth_hef.py`). `bench_multistream --threads` runs the cribs as threads of one
 process that share the UGen300 (one VDevice; HailoRT's scheduler takes turns between the two models).
 `FG_CHIP_PROCESS=1` moves the chip into a child process that is restarted after a USB disconnect; we use it for
 several cribs and for long runs. `FG_CHIP_BATCH=4` also sends the queued frames of several cribs as one batch, which
@@ -390,6 +453,7 @@ uv run python -m experiments.mouth_patch_build calib                # 2. rerun t
 uv run python -m experiments.mouth_patch_build calib_1123
 .venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib calib_1123 --seed 0 --tag p_base_s0   # 3. also seeds 1 and 2
 .venv-vlm/Scripts/python -m experiments.mouth_patch_export p_base model/mouth_patch_ens3.onnx               # 4. three models -> one ONNX
+.venv-vlm/Scripts/python -m experiments.mouth_patch_export p_base model/mouth_patch_ens3_hailo.onnx --hailo # 5. version for the Hailo compiler
 ```
 
 Training data is our own doll footage only: the calibration half of `hailo/prep_calib.py` (`SPLITS`, split by whole
@@ -404,7 +468,7 @@ the whole head crop (`experiments/airway_crops.py`, `airway_train.py`) was not a
 
 ```
 pipeline/       the per-crib pipeline (the part that runs on the edge box)
-  infant_face_v6.py   main pipeline: v3 + mouth/nose patch model (nose-to-chin crop of each face, ONNX Runtime)
+  infant_face_v6.py   main pipeline: v3 + mouth/nose patch model (nose-to-chin crop of each face; ONNX Runtime, or the UGen300 with FG_MOUTH_HEF)
   infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (v6 builds on it)
   infant_face_v4.py   for comparison: v3 + mouth-skin check
   infant_face_v5.py   for comparison: v4 + three face levels (ok / warn / alert)
@@ -417,7 +481,8 @@ experiments/    earlier versions (v1, v2) and exploratory spikes kept for compar
                 (vlm_spike.py), the training scripts of the mouth/nose patch model (mouth_patch_*.py) and the
                 earlier head-crop classifier (airway_crops.py, airway_train.py)
 hailo/          HEF conversion (calibration, compile, quantization-aware training, emulator and on-chip comparison,
-                host-side decoders, HailoRT runner, VLM runner, USB stress test), plan and results
+                host-side decoders, HailoRT runner with drop-ins for YuNet and the mouth/nose patch model, VLM runner,
+                USB stress test), plan and results
 labels/         our annotations: doll photos, crib areas and timelines for the doll videos, one training-only sequence
 model/          YuNet face detector (MIT); RTMO-m downloads on first run; the mouth/nose patch model and HEF files are not included
 docs/           technical write-up and test reports (Chinese)
@@ -440,8 +505,9 @@ docs/           technical write-up and test reports (Chinese)
   Real newborns need an ethics-approved pilot (IRB) first.
 - The patch model only judges faces the detector finds. When YuNet misses a side face, the crib still counts as not
   visible (false alert), and v6 cannot undo that.
-- The patch model runs on the host CPU; it is not compiled for the Hailo-10H yet, and the whole pipeline with it has
-  not been timed on the chip.
+- The patch model runs on the host CPU by default. Its 8-bit build on the Hailo-10H matches it on our doll data but
+  raises a few more false alerts on SyRIP (11 instead of 9 of the 81 nursery-like photos). With it and RTMO-m on the
+  chip, one 8-hour run with 8 cribs had no USB disconnect; that is one night on one laptop, not a guarantee.
 - A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
 - Night (IR) footage is only simulated, and grayscale raises false alerts.
 - The UGen300 drops off USB now and then (every few minutes with YuNet on the chip under load; with RTMO-m alone a few

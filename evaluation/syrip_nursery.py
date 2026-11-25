@@ -10,10 +10,11 @@ SyRIP 的主要誤報數字改看「像嬰兒室」的子集：SyRIP 多半是 2
 
 用法（先跑 eval_syrip，例如 --face v3、v4、v6 --models rtmo）：
     uv run python -m evaluation.syrip_nursery v3 v4 v6
-輸出：終端機表格（讀 outputs/syrip_eval/rtmo_<版本>.csv）
+    uv run python -m evaluation.syrip_nursery v6 --eval-dir outputs/syrip_eval_chip-rtmo_D1_chip-mouth_A   # 模型在晶片上的那份
+輸出：終端機表格（讀 outputs/syrip_eval/rtmo_<版本>.csv；--eval-dir 換資料夾，跟 score_relabel.py 一樣）
 """
+import argparse
 import csv
-import sys
 from pathlib import Path
 
 from evaluation.eval_syrip import OUT_DIR as EVAL_DIR
@@ -31,14 +32,19 @@ def read_csv(path, enc="utf-8-sig"):
 
 
 def main():
-    vers = sys.argv[1:] or ["v3", "v4", "v6"]
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("versions", nargs="*", default=["v3", "v4", "v6"])
+    ap.add_argument("--eval-dir", type=Path, default=EVAL_DIR,
+                    help="eval_syrip 的輸出資料夾（灰階、換了模型或放晶片時是 outputs/syrip_eval_<條件>）")
+    args = ap.parse_args()
+    vers = args.versions
     for p in (NURSERY, MOUTH_OBJECTS, LABELS):
         if not p.exists():
             raise SystemExit(f"找不到 {p}（子集清單和人工重標不在 repo 裡）")
     _, truth = load_truth(LABELS)
     kinds = {r["file"]: r["kind"] for r in read_csv(MOUTH_OBJECTS)}
     nursery = {r["file"] for r in read_csv(NURSERY) if r["nursery_like"] == "1"}
-    data = {v: {r["file"]: r for r in read_csv(EVAL_DIR / f"rtmo_{v}.csv", "utf-8")} for v in vers}
+    data = {v: {r["file"]: r for r in read_csv(args.eval_dir / f"rtmo_{v}.csv", "utf-8")} for v in vers}
     first = data[vers[0]]
 
     def visible(f):   # 1 看得到／2 部分／3 看不到（人工重標優先）

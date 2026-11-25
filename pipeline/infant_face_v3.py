@@ -45,7 +45,8 @@ RTMO_HEF_ENV = "FG_RTMO_HEF"     # RTMO 的前段改在 UGen300（Hailo-10H）�
 
 def rtmo_tag():
     """換了模型時接在評估輸出檔名後面的代號：RTMO 換 ONNX 是 rtmo-<檔名>、改在晶片上是 chip-<檔名>；
-    YuNet 改在晶片上再接 chip-<檔名>（例如 chip-rtmo_D1_chip-yunet_A）。都用預設模型時是空字串，輸出位置跟以前一樣。"""
+    YuNet、口鼻小塊模型改在晶片上再接 chip-<檔名>（例如 chip-rtmo_D1_chip-yunet_A、chip-rtmo_D1_chip-mouth_A）。
+    都用預設模型時是空字串，輸出位置跟以前一樣。"""
     parts = []
     hef, path = os.environ.get(RTMO_HEF_ENV), os.environ.get(RTMO_ONNX_ENV)
     if hef:
@@ -55,6 +56,9 @@ def rtmo_tag():
     yunet = os.environ.get(YUNET_HEF_ENV)
     if yunet:
         parts.append(f"chip-{Path(yunet).stem}")
+    mouth = os.environ.get("FG_MOUTH_HEF")   # ＝infant_face_v6.MOUTH_HEF_ENV（v6 import 這個檔，這裡不能反過來 import）
+    if mouth:
+        parts.append(f"chip-{Path(mouth).stem}")
     return "_".join(parts)
 
 

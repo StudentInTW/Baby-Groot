@@ -23,6 +23,13 @@ hailo/prep_calib.py
 
 輸出（hailo/calib/）：coco.npy、coco_hold.npy、doll_calib.npy、doll_hold.npy（RTMO 的前面加 rtmo_），
 都是 (N, 640, 640, 3) 的 BGR uint8；每個檔案旁邊有 *_meta.csv，記每張圖的來源。
+
+口鼻小塊模型（v6，--model mouth）：
+  uv run python -m hailo.prep_calib --model mouth
+  直接用 experiments/mouth_patch_build.py 存的小塊（outputs/airway3/patch/<組>/p/，1.6 倍範圍），取中間 96×96
+  （＝主流程 infant_face_v6.mouth_patch 切的那塊）。校正只用 calib 那一半（跟訓練同一批，calib、calib_1123）；
+  比對用 hold、hold_1123、field（308 床娃娃），只拿來比量化前後，不調任何東西。真實嬰兒、只能內部評估的影片的小塊不收。
+  輸出 mouth_calib.npy（預設 1024 張）、mouth_hold.npy（全部），(N, 96, 96, 3) 的 BGR uint8。
 """
 
 import argparse
@@ -236,6 +243,30 @@ def fetch(folder, urls, workers=8):
                 print(f"  {k}/{len(todo)}", flush=True)
 
 
+PATCH_DIR = ROOT / "outputs" / "airway3" / "patch"   # experiments/mouth_patch_build.py 存的口鼻小塊
+
+
+def mouth_patches(sets, n=0, seed=0):
+    """口鼻小塊模型的校正／比對資料（見檔頭）：每張臉的小塊取中間 96×96，回傳 [(BGR uint8, meta), ...]。"""
+    items = []
+    for s in sets:
+        with open(PATCH_DIR / s / "samples.csv", encoding="utf-8-sig") as fh:
+            lab = {r["name"]: r for r in csv.DictReader(fh)}
+        with open(PATCH_DIR / s / "faces.csv", encoding="utf-8-sig") as fh:
+            items += [(s, r, lab.get(r["name"], {})) for r in csv.DictReader(fh)]
+    if n and len(items) > n:
+        random.Random(seed).shuffle(items)
+        items = items[:n]
+    out = []
+    for s, r, sample in items:
+        img = cv2.imdecode(np.fromfile(str(PATCH_DIR / s / "p" / r["patch"]), np.uint8), cv2.IMREAD_COLOR)  # 檔名可能是中文
+        c = (img.shape[0] - 96) // 2
+        out.append((np.ascontiguousarray(img[c:c + 96, c:c + 96]),
+                    {"set": s, "patch": r["patch"], "score": r["score"], "label": sample.get("label", ""),
+                     "staged": sample.get("staged", "")}))
+    return out
+
+
 def save(name, items):
     OUT.mkdir(parents=True, exist_ok=True)
     np.save(OUT / f"{name}.npy", np.stack([img for img, _ in items]))
@@ -249,17 +280,22 @@ def save(name, items):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="yunet", choices=("yunet", "rtmo"))
+    ap.add_argument("--model", default="yunet", choices=("yunet", "rtmo", "mouth"))
     ap.add_argument("--coco-dir", type=Path, help="放 annotations_trainval2017.zip 的資料夾；不給就不做 COCO")
     ap.add_argument("--coco-n", type=int, default=768,
                     help="COCO 校正張數（val2017 可商用的只有 862 張；剩下的存成 coco_hold 比對用）")
-    ap.add_argument("--calib-n", type=int, default=512, help="娃娃校正圖張數")
+    ap.add_argument("--calib-n", type=int, help="校正圖張數（預設：娃娃 512 張、口鼻小塊 1024 張）")
     ap.add_argument("--hold-n", type=int, default=384, help="娃娃比對圖張數")
     ap.add_argument("--every", type=float, default=3.0, help="影片每幾秒取一幀")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-doll", action="store_true")
     args = ap.parse_args()
 
+    if args.model == "mouth":
+        save("mouth_calib", mouth_patches(("calib", "calib_1123"), args.calib_n or 1024, args.seed))
+        save("mouth_hold", mouth_patches(("hold", "hold_1123", "field")))
+        return
+    args.calib_n = args.calib_n or 512
     pre = "rtmo_" if args.model == "rtmo" else ""
     if args.coco_dir:
         if args.model == "rtmo":

@@ -11,7 +11,9 @@ v3 再加「口鼻小塊模型」，取代 v4 的口鼻膚色門檻。結果見 
   3. 小型分類模型判「口鼻露出」的機率：三顆用不同亂數種子訓練的 ResNet18 平均（合判），≥ 0.5 算看得到。
      口鼻看不到的臉（< 0.5）跟 v4 一樣從這個人的臉裡拿掉。
 模型：model/mouth_patch_ens3.onnx（三顆合成一個檔，134 MB，不進 repo；環境變數 FG_MOUTH_ONNX 可換路徑）。
-  onnxruntime 在主機 CPU 上跑，不用 PyTorch；每張臉約 3–7 ms。
+  onnxruntime 在主機 CPU 上跑、只用 1 條執行緒（MOUTH_ORT_THREADS），不用 PyTorch；1 床單獨跑時一次 1 張臉約 19 ms
+  （開滿核心約 6 ms，但多床時各床互搶、合計反而慢）。
+  設 FG_MOUTH_HEF＝編好的 HEF（hailo/compile_hef.py --model mouth）就改在 UGen300 上跑（hailo/mouth_hef.py），介面一樣。
 訓練：只用自己拍的娃娃影片和照片（hailo/prep_calib.py SPLITS 的 calib 那一半，2550 張臉），
   綠的幀裡的臉＝露出、黃紅的幀裡 YuNet 找到的（假）臉＝沒露出；另外把露出的小塊 25% 貼一塊布蓋住鼻嘴當成沒露出。
   預訓練權重 timm/resnet18.a1_in1k（Apache-2.0）。真實嬰兒、SyRIP、網路影像都沒進訓練。
@@ -38,10 +40,13 @@ from pipeline.infant_face_v3 import load_rtmo, make_persons
 from pipeline.infant_face_v4 import ORANGE, detect_faces_v4
 
 MOUTH_ONNX_ENV = "FG_MOUTH_ONNX"
+MOUTH_HEF_ENV = "FG_MOUTH_HEF"   # 設了就改在 UGen300 上跑這顆 HEF（hailo/mouth_hef.py）；要裝 pyHailoRT
 MOUTH_MODEL = ROOT / "model" / "mouth_patch_ens3.onnx"
 PATCH = 96            # 口鼻小塊邊長（像素）
 SIDE, DOWN = 1.3, 0.8  # 小塊邊長＝m × SIDE；中心在兩眼中點往嘴的方向 m × DOWN
 MOUTH_P_MIN = 0.5     # 三顆平均的「口鼻露出」機率低於這個 → 口鼻看不到。沒有調過（訓練時的預設）
+MOUTH_ORT_THREADS = 1  # onnxruntime 每次呼叫只用 1 條執行緒（2026/11/25 起）。多床時每床在自己的執行緒裡呼叫，預設開滿核心會互搶：
+                       # 16 床合計慢 2–3 成；1 條執行緒時幾乎不拖慢，1 床只慢約 3%（hailo/結果.md「主流程的速度」）
 
 
 def mouth_patch(img, lm, size=PATCH, ctx=1.0):
@@ -68,19 +73,26 @@ def mouth_patch(img, lm, size=PATCH, ctx=1.0):
 
 
 class MouthModel:
-    """口鼻小塊模型（onnxruntime）。probs() 會把結果記在每張臉的 f.p_mouth，同一張臉不重算。"""
+    """口鼻小塊模型（onnxruntime）。probs() 會把結果記在每張臉的 f.p_mouth，同一張臉不重算。
+    晶片版（hailo/mouth_hef.py 的 MouthHef）繼承這個，只換 predict。"""
 
     def __init__(self, path):
         import onnxruntime as ort
         self.path = Path(path)
-        self.sess = ort.InferenceSession(str(self.path), providers=["CPUExecutionProvider"])
+        so = ort.SessionOptions()
+        so.intra_op_num_threads, so.inter_op_num_threads = MOUTH_ORT_THREADS, 1
+        self.sess = ort.InferenceSession(str(self.path), so, providers=["CPUExecutionProvider"])
+
+    def predict(self, patches):
+        """(N, 96, 96, 3) BGR uint8 小塊 → (N,) 口鼻露出的機率（三顆平均）。"""
+        return self.sess.run(None, {"bgr": patches})[0]
 
     def probs(self, img, faces):
         todo = [f for f in faces if getattr(f, "p_mouth", None) is None]
         patches = [mouth_patch(img, f.lm) for f in todo]
         ok = [i for i, p in enumerate(patches) if p is not None]
         if ok:
-            out = self.sess.run(None, {"bgr": np.stack([patches[i] for i in ok])})[0]
+            out = self.predict(np.stack([patches[i] for i in ok]))
             for i, p in zip(ok, out):
                 todo[i].p_mouth = float(p)
         for i, p in enumerate(patches):
@@ -90,7 +102,12 @@ class MouthModel:
 
 
 def load_mouth_model(path=None, required=False):
-    """讀口鼻小塊模型；檔案不在時回傳 None（required=True 就直接結束），讓沒有這個檔的人照樣能跑 v3、v4。"""
+    """讀口鼻小塊模型；檔案不在時回傳 None（required=True 就直接結束），讓沒有這個檔的人照樣能跑 v3、v4。
+    有設 FG_MOUTH_HEF（而且沒指定 path）就改用晶片版。"""
+    hef = os.environ.get(MOUTH_HEF_ENV)
+    if hef and path is None:
+        from hailo.mouth_hef import MouthHef
+        return MouthHef(hef)
     path = Path(path or os.environ.get(MOUTH_ONNX_ENV) or MOUTH_MODEL)
     if not path.exists():
         msg = f"找不到口鼻小塊模型 {path}（不在 repo 裡；見 README），v6 不跑"
