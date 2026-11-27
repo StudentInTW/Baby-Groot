@@ -187,18 +187,39 @@ class Hef:
             _leave()
 
     def _run(self, cm, images, out=None):
-        """每 self.batch 張一起送（一次 run_async 給多組 bindings，HailoRT 才會連著跑完這一批再換下一段）；batch 1 時一張一張送。"""
+        """每 self.batch 張一起送（一次 run_async 給多組 bindings，HailoRT 才會連著跑完這一批再換下一段）；batch 1 時一張一張送。
+
+        晶片工作失敗一定要報錯，不能把沒寫進去的輸出交出去（11/28 修）：pyHailoRT 的 job.wait() 只有逾時才報錯，
+        工作本身失敗（例如斷線）只會告訴 run_async 的回呼。11/27 晶片評估時斷線那一幀的口鼻輸出沒寫進去，
+        np.empty 剛好是 0 → 三顆 logit 0 → 機率 0.50 → 判「看得到」；晶片放子程序時，共用記憶體裡還會是上一批
+        （別床）的輸出。所以：回呼記下失敗；輸出先填 NaN、跑完檢查有沒有寫滿。任一個不對就丟 HailoRTException：
+        同一個程序裡重連、重送一次（__call__）；子程序裡直接結束、主程序重開再送一次（chip_process）；
+        再失敗就報錯給主流程，那一幀不算判讀（live_view：那床離線、紫燈），不會被當成看得到。"""
+        from hailo_platform.pyhailort.pyhailort import HailoRTException
         outs = ({n: np.empty((len(images),) + s, np.float32) for n, s in self.outputs} if out is None
                 else {n: o for (n, _), o in zip(self.outputs, out)})
+        for o in outs.values():
+            o.fill(np.nan)
+        failed = []
+
+        def done(completion_info):          # HailoRT 的執行緒呼叫：只記下來，不能在這裡丟例外
+            if completion_info.exception is not None:
+                failed.append(completion_info.exception)
+
         jobs = []
         for s in range(0, len(images), self.batch):
             bs = [cm.create_bindings(input_buffers={self.input_name: images[k]},
                                      output_buffers={n: outs[n][k] for n, _ in self.outputs})
                   for k in range(s, min(s + self.batch, len(images)))]
             cm.wait_for_async_ready(timeout_ms=TIMEOUT_MS, frames_count=len(bs))
-            jobs.append(cm.run_async(bs))
+            jobs.append(cm.run_async(bs, done))
         for j in jobs:
             j.wait(TIMEOUT_MS)
+        if failed:
+            e = failed[0]
+            raise e if isinstance(e, HailoRTException) else HailoRTException(f"晶片工作失敗：{e}")
+        if not all(np.isfinite(o).all() for o in outs.values()):
+            raise HailoRTException("晶片工作回報完成，但輸出沒有寫滿（還有 NaN）")
         return [outs[n] for n, _ in self.outputs]
 
     def close(self):

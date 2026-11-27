@@ -31,6 +31,12 @@ hailo/prep_calib.py
   calib_r2、calib_1123_r2（新分法，含床位裡 0.3–0.8 分的臉）；第一版用的是 calib、calib_1123（--calib-sets 可換回）；
   比對用 hold、hold_1123、field（308 床娃娃），只拿來比量化前後，不調任何東西。真實嬰兒、只能內部評估的影片的小塊不收。
   輸出 mouth_calib.npy（預設 1024 張）、mouth_hold.npy（全部），(N, 96, 96, 3) 的 BGR uint8。
+
+RetinaFace（v7，--model retina）：
+  uv run python -m hailo.prep_calib --model retina
+  calib 那一半影片的床位畫面：每支每 3 秒（--every）一幀、每個床位一張，照主流程裁切（crib_detect.slot_crop：縮到長邊 640、
+  依床位方向轉正），再放進 640×480 的左上角、其餘補 0（infant_face_v7.letterbox），轉成 RGB（晶片收 RGB，見 hailo/retina_hef.py）。
+  隨機 64 張（--calib-n）。hold、308 床、真實嬰兒、只能內部評估的影片不收。輸出 retina_calib.npy，(N, 640, 480, 3) 的 RGB uint8。
 """
 
 import argparse
@@ -269,6 +275,34 @@ def mouth_patches(sets, n=0, seed=0):
     return out
 
 
+def retina_slots(n, every, seed):
+    """RetinaFace 的校正資料（見檔頭）：回傳 [(RGB uint8 640×480, meta), ...]。"""
+    from pipeline.infant_face_v7 import letterbox
+    ann, items = video_labels.load(), []
+    for name in SPLITS["calib"]["videos"]:
+        if name not in ann:
+            continue
+        cap = cv2.VideoCapture(str(video_labels.find_video(name)))
+        dur = cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        items += [(name, t, d) for t in np.arange(1.0, dur - 0.5, every) for d in ann[name]["slots"]]
+    random.Random(seed).shuffle(items)
+    out = []
+    for name, t, d in items:
+        cap = cv2.VideoCapture(str(video_labels.find_video(name)))
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok:
+            continue
+        slot = ann[name]["slots"][d]
+        img, _ = crib_detect.slot_crop(frame, slot["rect"], slot["rot"])
+        out.append((np.ascontiguousarray(letterbox(img, 480, 640)[0][:, :, ::-1]), {"video": name, "t": f"{t:.1f}", "doll": d}))
+        if len(out) == n:
+            break
+    return out
+
+
 def save(name, items):
     OUT.mkdir(parents=True, exist_ok=True)
     np.save(OUT / f"{name}.npy", np.stack([img for img, _ in items]))
@@ -282,11 +316,11 @@ def save(name, items):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="yunet", choices=("yunet", "rtmo", "mouth"))
+    ap.add_argument("--model", default="yunet", choices=("yunet", "rtmo", "mouth", "retina"))
     ap.add_argument("--coco-dir", type=Path, help="放 annotations_trainval2017.zip 的資料夾；不給就不做 COCO")
     ap.add_argument("--coco-n", type=int, default=768,
                     help="COCO 校正張數（val2017 可商用的只有 862 張；剩下的存成 coco_hold 比對用）")
-    ap.add_argument("--calib-n", type=int, help="校正圖張數（預設：娃娃 512 張、口鼻小塊 1024 張）")
+    ap.add_argument("--calib-n", type=int, help="校正圖張數（預設：娃娃 512 張、口鼻小塊 1024 張、RetinaFace 64 張）")
     ap.add_argument("--hold-n", type=int, default=384, help="娃娃比對圖張數")
     ap.add_argument("--every", type=float, default=3.0, help="影片每幾秒取一幀")
     ap.add_argument("--seed", type=int, default=0)
@@ -295,6 +329,9 @@ def main():
     ap.add_argument("--skip-doll", action="store_true")
     args = ap.parse_args()
 
+    if args.model == "retina":
+        save("retina_calib", retina_slots(args.calib_n or 64, args.every, args.seed))
+        return
     if args.model == "mouth":
         save("mouth_calib", mouth_patches(tuple(args.calib_sets), args.calib_n or 1024, args.seed))
         save("mouth_hold", mouth_patches(("hold", "hold_1123", "field")))

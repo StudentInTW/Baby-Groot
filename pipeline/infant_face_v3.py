@@ -46,7 +46,8 @@ RTMO_HEF_ENV = "FG_RTMO_HEF"     # RTMO 的前段改在 UGen300（Hailo-10H）�
 def rtmo_tag():
     """換了模型時接在評估輸出檔名後面的代號：RTMO 換 ONNX 是 rtmo-<檔名>、改在晶片上是 chip-<檔名>；
     YuNet、口鼻小塊模型改在晶片上再接 chip-<檔名>（例如 chip-rtmo_D1_chip-yunet_A、chip-rtmo_D1_chip-mouth_A）；
-    口鼻小塊模型換一顆 ONNX（FG_MOUTH_ONNX）是 mouth-<檔名>。都用預設模型時是空字串，輸出位置跟以前一樣。"""
+    口鼻小塊模型換一顆 ONNX（FG_MOUTH_ONNX）是 mouth-<檔名>；v7 的 RetinaFace 同樣是 chip-<檔名>／retina-<檔名>。
+    都用預設模型時是空字串，輸出位置跟以前一樣。"""
     parts = []
     hef, path = os.environ.get(RTMO_HEF_ENV), os.environ.get(RTMO_ONNX_ENV)
     if hef:
@@ -62,6 +63,12 @@ def rtmo_tag():
         parts.append(f"chip-{Path(mouth).stem}")
     elif mouth_onnx:
         parts.append(f"mouth-{Path(mouth_onnx).stem}")
+    retina = os.environ.get("FG_RETINA_HEF")   # ＝infant_face_v7.RETINA_HEF_ENV（v7 的 RetinaFace）
+    retina_onnx = os.environ.get("FG_RETINA_ONNX")
+    if retina:
+        parts.append(f"chip-{Path(retina).stem}")
+    elif retina_onnx:
+        parts.append(f"retina-{Path(retina_onnx).stem}")
     return "_".join(parts)
 
 

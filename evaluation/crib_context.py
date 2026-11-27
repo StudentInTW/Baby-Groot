@@ -3,8 +3,8 @@ crib_context.py
 每床鏡頭的床位情境評估（2026/10/10，原型）：照護中暫停計時、空床不響。
 規則與參數在 pipeline/crib_state.py（CribState）；這支用娃娃影片比較「原本的 3 秒規則」和「加上床位情境」。
 
-輸入：eval_video.py 存的每幀判定（outputs/video_eval/<影片>_frames.csv，用主流程 v6＋床位，
-舊的每幀判定沒有 v6 欄時用 v3＋床位；要先跑過、每秒 5 幀），
+輸入：eval_video.py 存的每幀判定（outputs/video_eval/<影片>_frames.csv，用主流程 v7＋床位，
+舊的每幀判定沒有 v7 欄時用 v6＋床位、也沒有 v6 欄時用 v3＋床位；要先跑過、每秒 5 幀），
 再讀一次影片算兩個便宜的特徵（都在縮成長邊 160 像素的小圖上算，比找臉便宜得多）：
   床位邊緣一圈的移動量（跟前一幀比）、跟空床參考畫面的色差。
 空床參考畫面：床位檔的 empty_ref 欄（影片第幾秒是空床）；實機是安裝時拍一張。
@@ -211,8 +211,8 @@ def draw(name, rows, ann, out_path, fps=FPS):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("videos", nargs="*", help="影片名稱；不給就跑床位檔裡有空床參考（empty_ref）的影片（HANDHELD、NOT_NURSERY 不跑）")
-    ap.add_argument("--mode", choices=["v6_slot", "v3_slot", "v4_slot", "v5_slot"],
-                    help="依哪一種判定（預設主流程 v6_slot；每幀判定沒有 v6 欄時 v3_slot）")
+    ap.add_argument("--mode", choices=["v7_slot", "v6_slot", "v3_slot", "v4_slot", "v5_slot"],
+                    help="依哪一種判定（預設主流程 v7_slot；每幀判定沒有 v7 欄時 v6_slot，再沒有 v3_slot）")
     ap.add_argument("--fps", type=float, default=FPS,
                     help=f"每秒判讀幾幀（預設 {FPS}）；比較低時從存好的每秒 {FPS} 幀判定裡抽幀，輸出檔名另加 _<幀率>fps_p<起點>")
     ap.add_argument("--phase", type=int, default=0, help="抽幀時從每秒 5 幀那批的第幾幀開始（0 到 5/fps−1）")

@@ -12,6 +12,7 @@ eval_syrip.py
   v4 —— v3 再加上「口鼻檢查」：找到的臉，下半臉不像皮膚就不算數（infant_face_v4.py）
   v5 —— v4 再把臉分三級 ok／warn／alert（infant_face_v5.py）
   v6 —— v3 再加上「口鼻小塊模型」：找到的臉，切鼻子到下巴一小塊、模型判口鼻露出的機率 < 0.5 就不算數（infant_face_v6.py）
+  v7 —— v6 判看不到的寶寶，在這個寶寶的範圍裡用 RetinaFace 再找一次臉（infant_face_v7.rescue_persons_v7，2026/11/28 加）
 姿態模型（--models）：
   yolov8  —— Ultralytics YOLOv8n-pose（AGPL；要先 uv sync --group yolo）
   rtmpose —— rtmlib：YOLOX-m 找人 + RTMPose-m 估姿態（Apache-2.0）
@@ -54,6 +55,7 @@ from evaluation.degrade import degrade, describe, tag
 from pipeline.infant_face_v3 import detect_faces_v3, load_rtmo, make_persons, rtmo_tag
 from pipeline.infant_face_v4 import detect_faces_v4, drop_covered_faces
 from pipeline.infant_face_v6 import drop_covered_faces_v6, load_mouth_model
+from pipeline.infant_face_v7 import load_retina, rescue_persons_v7
 
 ROOT = Path(__file__).resolve().parent.parent
 SYRIP_ZIP = ROOT / "dataset" / "SyRIP_Posture.zip"
@@ -184,7 +186,7 @@ def report(rows, secs, n_images, face, condition="原圖"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", nargs="+", default=["yolov8", "rtmpose", "rtmo"])
-    ap.add_argument("--face", choices=["v2", "v3", "v4", "v5", "v6"], default="v2")
+    ap.add_argument("--face", choices=["v2", "v3", "v4", "v5", "v6", "v7"], default="v2")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張（0＝全部）")
     ap.add_argument("--gray", action="store_true", help="模擬 IR 夜視：轉成灰階（見 degrade.py）")
     ap.add_argument("--dim", type=float, default=0, help="模擬關燈：亮度乘上這個倍率（0＝不處理）")
@@ -197,7 +199,8 @@ def main():
     # v5 要抓側臉，偵測門檻降到 FACE_TH_V5（0.3），再靠三級分類擋假臉
     face_th = infant_face_v5.FACE_TH_V5 if args.face == "v5" else FACE_SCORE_TH
     face_det = create_face_detector(face_th)
-    mouth = load_mouth_model(required=True) if args.face == "v6" else None
+    mouth = load_mouth_model(required=True) if args.face in ("v6", "v7") else None
+    retina = load_retina(required=True) if args.face == "v7" else None
     # 灰階／關燈、換了模型（FG_RTMO_ONNX、FG_RTMO_HEF、FG_YUNET_HEF）的結果另外放，不蓋掉原圖的（score_relabel.py 預設讀原圖那份）
     cond = "_".join(filter(None, [tag(args.gray, args.dim), rtmo_tag()]))
     out_dir = OUT_DIR.with_name(f"{OUT_DIR.name}_{cond}") if cond else OUT_DIR
@@ -217,19 +220,21 @@ def main():
             t = time.perf_counter()
             dets = run(img)
             secs[m] += time.perf_counter() - t
-            if args.face in ("v3", "v4", "v5", "v6"):  # 要依每個人的頭部區域找臉，所以每個模型各找一次
+            if args.face in ("v3", "v4", "v5", "v6", "v7"):  # 要依每個人的頭部區域找臉，所以每個模型各找一次
                 persons = make_persons(dets)
                 t = time.perf_counter()
                 # v5 的 backbone＝v4（正常門檻＋口鼻膚色，保住召回）；detect_faces_v4 內部用 fc.FACE_SCORE_TH 過濾
-                faces = (detect_faces_v4 if args.face in ("v4", "v5", "v6") else detect_faces_v3)(face_det, img, persons)
+                faces = (detect_faces_v4 if args.face in ("v4", "v5", "v6", "v7") else detect_faces_v3)(face_det, img, persons)
                 secs["face"] += (time.perf_counter() - t) / len(models)
             else:
                 persons = [p for p in (make_person(b, k) for b, k in dets) if p is not None]
             assign_faces(persons, faces)
             if args.face in ("v4", "v5"):  # 口鼻被蓋住的臉不算數（v5 也用 v4 當骨幹）
                 drop_covered_faces(img, persons)
-            if args.face == "v6":  # 口鼻小塊模型判看不到的臉不算數
+            if args.face in ("v6", "v7"):  # 口鼻小塊模型判看不到的臉不算數
                 drop_covered_faces_v6(img, persons, mouth)
+            if args.face == "v7":  # v6 判看不到的寶寶，用 RetinaFace 再找一次
+                rescue_persons_v7(img, persons, retina, mouth)
             if args.face == "v5":  # 三級：backbone 可見→正臉 ok/側臉 warn；backbone alert→只有乾淨側臉才降 warn
                 low = infant_face_v5.detect_faces_v5(face_det, img, persons)
                 low_by = infant_face_v5.assign_low(persons, low)
@@ -244,6 +249,7 @@ def main():
                 "found": p is not None, "iou": round(ious[best], 3) if ious else 0.0,
                 "faces_in_image": len(faces), "faces_assigned": len(p["faces"]) if p else 0,
                 "alert": alert, "extra_persons": len(persons) - int(p is not None),
+                "v7_rescued": bool(p and p.get("retina")),
                 "head_err": round(float(np.linalg.norm(p["head"] - s["head"])
                                         / np.hypot(*(s["box"][2:] - s["box"][:2]))), 3) if p else "",
             })

@@ -1,6 +1,6 @@
 """
 hailo/compile_hef.py
-ONNX → HEF（parse → optimize 量化 → compile），在 WSL 的 DFC 虛擬環境執行。YuNet、RTMO-m 共用。
+ONNX → HEF（parse → optimize 量化 → compile），在 WSL 的 DFC 虛擬環境執行。YuNet、RTMO-m、口鼻小塊模型、RetinaFace 共用。
 
   . ~/hailo_dfc/bin/activate && cd ~/work        # DFC 把 log 寫在目前的資料夾，路徑不能有空白
   python "/mnt/c/Users/user/ASUS hackathon/hailo/compile_hef.py" --model yunet --name yunet_A --calib coco.npy
@@ -17,6 +17,11 @@ ONNX → HEF（parse → optimize 量化 → compile），在 WSL 的 DFC 虛擬
   model/mouth_patch_ens3_hailo.onnx。正規化（ImageNet 的平均、標準差，BGR 順序）放在 model script，
   晶片直接吃 96×96 的 BGR uint8 小塊；輸出三顆的 logit，sigmoid 和平均在主機做（hailo/mouth_hef.py）。
     python ".../compile_hef.py" --model mouth --name mouth_A --calib mouth_calib.npy
+- retina：v7 的 RetinaFace（mobilenet v1），hailo/retina_port.py 匯出的 model/retinaface_v1_640x480.onnx。
+  model script 整份照 Hailo Model Zoo 的 retinaface_mobilenet_v1.alls（不用下面的 optimization_level）：晶片上 bgr_to_rgb、
+  減平均 (104, 117, 123)、卷積的 bias 用 single_scale_decomposition、不微調、開偏差校正（batch 2）。主機送 RGB uint8（hailo/retina_hef.py）。
+  單一 context 放不下，DFC 自動分成 2 個 context（跟 Hailo 編好的 736×1280 版一樣）。CPU 上量化＋編譯約 11 分鐘。
+    python ".../compile_hef.py" --model retina --name retinaface_v1_640x480 --calib retina_calib.npy
 
 量化設定（model script）：
 - 校正張數明確設成實際給的張數：DFC 預設只拿前 64 張算各層範圍（calibration 的 calibset_size 預設 64）。
@@ -44,6 +49,14 @@ HW_ARCH = "hailo10h"
 
 # 加在 model script 最前面的指令。口鼻小塊模型：ImageNet 的平均、標準差（×255），BGR 順序（跟晶片收到的小塊一樣）
 SCRIPT_HEAD = {"mouth": ["normalization1 = normalization([103.53, 116.28, 123.675], [57.375, 57.12, 58.395])"]}
+# 整份 model script 照原作者的設定（不加 optimization_level 那兩行）：RetinaFace 照 Hailo Model Zoo 的 retinaface_mobilenet_v1.alls
+SCRIPT_FULL = {"retina": lambda n: [
+    "normalization1 = normalization([104, 117, 123], [1.0, 1.0, 1.0])",
+    "input_conversion = input_conversion(bgr_to_rgb)",
+    f"model_optimization_config(calibration, batch_size=2, calibset_size={n})",
+    "quantization_param([" + ", ".join(f"conv{i}" for i in range(1, 44)) + "], bias_mode=single_scale_decomposition)",
+    "post_quantization_optimization(finetune, policy=disabled)",
+    "post_quantization_optimization(bias_correction, policy=enabled)"]}
 
 
 def model_spec(name, onnx_path=None):
@@ -52,6 +65,8 @@ def model_spec(name, onnx_path=None):
         return onnx_path or REPO / "model" / "face_detection_yunet_2023mar.onnx", {}
     if name == "mouth":
         return onnx_path or REPO / "model" / "mouth_patch_ens3_hailo.onnx", {"net_input_shapes": {"bgr_norm": [1, 3, 96, 96]}}
+    if name == "retina":
+        return onnx_path or REPO / "model" / "retinaface_v1_640x480.onnx", {}
     from rtmo_post import CUT_NODES, ONNX
     return onnx_path or ONNX, {"start_node_names": ["input"], "end_node_names": list(CUT_NODES),
                                "net_input_shapes": {"input": [1, 3, 640, 640]}}
@@ -69,7 +84,7 @@ def load_calib(specs):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", required=True, choices=("yunet", "rtmo", "mouth"))
+    ap.add_argument("--model", required=True, choices=("yunet", "rtmo", "mouth", "retina"))
     ap.add_argument("--onnx", type=Path, help="不用預設的 ONNX（RTMO 量化感知訓練後的模型：節點名稱、切點跟原本一樣）")
     ap.add_argument("--name", required=True)
     ap.add_argument("--calib", nargs="+", help="不給就只做 parse")
@@ -105,9 +120,9 @@ def main():
         flavor = f"optimization_level={args.opt_level}"
         if args.compression_level is not None:
             flavor += f", compression_level={args.compression_level}"
-        script = SCRIPT_HEAD.get(args.model, []) + [
+        script = (SCRIPT_FULL[args.model](len(calib)) if args.model in SCRIPT_FULL else SCRIPT_HEAD.get(args.model, []) + [
             f"model_optimization_config(calibration, calibset_size={len(calib)})",
-            f"model_optimization_flavor({flavor})"] + args.extra
+            f"model_optimization_flavor({flavor})"]) + args.extra
         (out / f"{args.name}.alls").write_text("\n".join(script) + "\n")
         runner.load_model_script("\n".join(script) + "\n")
         t1 = time.perf_counter()

@@ -34,6 +34,7 @@ eval_doll.py
     uv run python -m evaluation.eval_doll --save-vis          # 每張都存標註圖（預設只存判錯的）
     uv run python -m evaluation.eval_doll --face v4 --det-th 0.15  # v4（v3＋口鼻檢查）＋建議的找人門檻
     uv run python -m evaluation.eval_doll --face v6 --det-th 0.15 --batch 1  # v6（v3＋口鼻小塊模型）；第 2–4 批是它的訓練資料
+    uv run python -m evaluation.eval_doll --face v7 --det-th 0.15 --batch 1  # v7（v6 判看不到的娃娃再用 RetinaFace 找一次，11/28 加）
 輸出：outputs/doll_eval/dolls<suffix>.csv、判錯的標註圖 outputs/doll_eval/vis<suffix>/
 """
 
@@ -53,6 +54,7 @@ from pipeline import face_common
 from pipeline import infant_face_v3
 from pipeline import infant_face_v4
 from pipeline import infant_face_v6
+from pipeline import infant_face_v7
 from pipeline.face_common import (
     FACE_SCORE_TH, GREEN, MIN_BODY_KPTS, RED, YELLOW, assign_faces, create_face_detector, put_label,
 )
@@ -253,9 +255,10 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 張")
     ap.add_argument("--batch", default="", help="只跑這幾批照片（例如 4 或 1,2；看標註檔的 batch 欄），結果檔名加 _b<批次>")
     ap.add_argument("--save-vis", action="store_true", help="每張都存標註圖（預設只存判錯的）")
-    ap.add_argument("--face", choices=["v3", "v4", "v6"], default="v3",
+    ap.add_argument("--face", choices=["v3", "v4", "v6", "v7"], default="v3",
                     help="v4＝v3 再加口鼻檢查（infant_face_v4.py），輸出檔名加 _v4；"
-                         "v6＝v3 再加口鼻小塊模型（infant_face_v6.py，第 2–4 批照片是它的訓練資料，只有第 1 批公平）")
+                         "v6＝v3 再加口鼻小塊模型（infant_face_v6.py，第 2–4 批照片是它的訓練資料，只有第 1 批公平）；"
+                         "v7＝v6 判看不到的娃娃，在它的範圍裡用 RetinaFace 再找一次臉（infant_face_v7.rescue_persons_v7）")
     # 以下三個是調門檻用的，只改這支評估程式跑的值，不動 infant_face_v3.py 的預設
     ap.add_argument("--det-th", type=float, default=0, help=f"RTMO 找人門檻（預設 {infant_face_v3.DET_TH}）")
     ap.add_argument("--face-th", type=float, default=0, help=f"整張圖的人臉門檻（預設 {FACE_SCORE_TH}）")
@@ -285,7 +288,8 @@ def main():
 
     run_pose = load_rtmo()
     detector = create_face_detector(args.face_th or FACE_SCORE_TH)
-    mouth = infant_face_v6.load_mouth_model(required=True) if args.face == "v6" else None
+    mouth = infant_face_v6.load_mouth_model(required=True) if args.face in ("v6", "v7") else None
+    retina = infant_face_v7.load_retina(required=True) if args.face == "v7" else None
     rows, secs = [], defaultdict(float)
 
     for n, f in enumerate(files, 1):
@@ -305,13 +309,15 @@ def main():
         persons = make_persons(dets)
         secs["pose"] += time.perf_counter() - t
         t = time.perf_counter()
-        if args.face in ("v4", "v6"):
+        if args.face in ("v4", "v6", "v7"):
             faces = infant_face_v4.detect_faces_v4(detector, img, persons)
             assign_faces(persons, faces)
             if args.face == "v4":
                 infant_face_v4.drop_covered_faces(img, persons)
             else:
                 infant_face_v6.drop_covered_faces_v6(img, persons, mouth)
+            if args.face == "v7":
+                infant_face_v7.rescue_persons_v7(img, persons, retina, mouth)
         else:
             faces = detect_faces_v3(detector, img, persons)
             assign_faces(persons, faces)
@@ -330,7 +336,7 @@ def main():
                 "raw_det": raw,
                 "file": f, "folder": f.split("/")[0], "doll": d["doll"], "label": d["label"],
                 "staged": d["staged"], "pose": d["pose"], "batch": d["batch"], "dolls_in_image": len(dolls),
-                "found": p is not None, "alert": alert,
+                "found": p is not None, "alert": alert, "v7_rescued": bool(p and p.get("retina")),
                 "faces_assigned": len(p["faces"]) if p else 0,
                 "face_scores": " ".join(f"{x[4]:.2f}" for x in p["faces"]) if p else "",
                 # v4：留下的臉和被口鼻檢查拿掉的臉，各自「下半臉像皮膚的比例」
@@ -357,7 +363,8 @@ def main():
         writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    title = {"v4": "娃娃擺拍｜v4（v3＋口鼻檢查）", "v6": "娃娃擺拍｜v6（v3＋口鼻小塊模型）"}.get(args.face, "娃娃擺拍｜v3（RTMO＋YuNet）") \
+    title = {"v4": "娃娃擺拍｜v4（v3＋口鼻檢查）", "v6": "娃娃擺拍｜v6（v3＋口鼻小塊模型）",
+             "v7": "娃娃擺拍｜v7（v6＋RetinaFace 補找臉）"}.get(args.face, "娃娃擺拍｜v3（RTMO＋YuNet）") \
         + (f"｜{describe(args.gray, args.dim)}" if args.gray or args.dim else "") \
         + (f"｜長邊 {args.max_side}px" if args.max_side else "｜原圖 4284×5712") \
         + (f"｜找人門檻 {args.det_th:g}" if args.det_th else "") \

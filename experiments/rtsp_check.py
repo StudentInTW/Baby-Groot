@@ -1,6 +1,6 @@
 """
 rtsp_check.py
-場域測試：讀一路 RTSP 串流（例如海康 DVR 某一路），量連線；加 --infer 跑主流程 v6＋床位判讀（--mode 可換對照），邊測邊用數字鍵標「現在擺的是什麼」，
+場域測試：讀一路 RTSP 串流（例如海康 DVR 某一路），量連線；加 --infer 跑主流程 v7＋床位判讀（--mode 可換對照），邊測邊用數字鍵標「現在擺的是什麼」，
 每次判讀寫一列 CSV，結束時印出每種擺法的結果。預設不存任何畫面；--record 才存判讀用的原始畫面（只在畫面裡只有娃娃時用）。
 --infer、--record 只對空床或娃娃用：真實嬰兒要等 IRB 和家長同意。
 
@@ -167,21 +167,23 @@ def run_multi(url, chans, seconds, name):
     print(f"→ {out}")
 
 
-def make_infer(slot, rot, mode="v6_slot"):
-    """載入 RTMO、YuNet（和口鼻小塊模型：mode 是 v6_slot 時一定要有，其他 mode 有檔案就順便記 v6），
+def make_infer(slot, rot, mode="v7_slot"):
+    """載入 RTMO、YuNet（和口鼻小塊模型、RetinaFace：mode 是 v6_slot／v7_slot 時一定要有，其他 mode 有檔案就順便記 v6、v7），
     回傳 infer(frame) → 這一幀的判讀結果（dict）。"""
-    from pipeline import crib_detect, infant_face_v3, infant_face_v5, infant_face_v6
+    from pipeline import crib_detect, infant_face_v3, infant_face_v5, infant_face_v6, infant_face_v7
     from pipeline.face_common import FACE_SCORE_TH, create_face_detector
     infant_face_v3.DET_TH = 0.15  # 跟 eval_video.py 一樣
     run_pose = infant_face_v3.load_rtmo()
     det = create_face_detector(FACE_SCORE_TH)
     det_v5 = create_face_detector(infant_face_v5.FACE_TH_V5)
-    mouth = infant_face_v6.load_mouth_model(required=mode == "v6_slot")
+    mouth = infant_face_v6.load_mouth_model(required=mode in ("v6_slot", "v7_slot"))
+    retina = infant_face_v7.load_retina(required=mode == "v7_slot") if mouth is not None else None
     x0, y0, x1, y1 = slot
 
     def infer(frame):
         t = time.time()
-        res, persons, faces = crib_detect.detect(run_pose, det, det_v5, frame, {"S": slot}, {"S": rot}, mouth=mouth)
+        res, persons, faces = crib_detect.detect(run_pose, det, det_v5, frame, {"S": slot}, {"S": rot}, mouth=mouth,
+                                                 retina=retina)
         ms = (time.time() - t) * 1000
         h, w = frame.shape[:2]
         boxes = [tuple(int(v) for v in f[:4]) for f in faces]
@@ -189,6 +191,7 @@ def make_infer(slot, rot, mode="v6_slot"):
         r = res["S"]
         return {"verdict": r[mode], "v3_slot": r["v3_slot"], "v4_slot": r["v4_slot"], "v5_tier": r["v5_tier"],
                 "mouth_skin": r["mouth_skin"], "v6_slot": r.get("v6_slot", ""), "mouth_p": r.get("mouth_p", ""),
+                "v7_slot": r.get("v7_slot", ""), "retina": r.get("retina", ""),
                 "v3_person": r["v3"], "persons": len(persons), "persons_in_slot": r["persons"],
                 "faces_in_slot": len(in_slot), "face_px": max((b[2] - b[0] for b in in_slot), default=0),
                 "face_scores": r["slot_face_scores"], "ms": ms,
@@ -272,8 +275,9 @@ def main():
     ap.add_argument("--name", default="cam", help="檔名開頭，例如 cam04_main")
     ap.add_argument("--label", default=None, choices=list(LABELS), help="一開始的擺法（不開視窗時用）")
     ap.add_argument("--record", action="store_true", help="另存判讀用的原始畫面（只在畫面裡只有娃娃時用）")
-    ap.add_argument("--mode", default="v6_slot", choices=["v6_slot", "v3_slot", "v4_slot", "v5_slot"],
-                    help="畫面和摘要用哪一種判定（預設主流程 v6，要有口鼻小塊模型檔；v3 只看找不找得到臉；"
+    ap.add_argument("--mode", default="v7_slot", choices=["v7_slot", "v6_slot", "v3_slot", "v4_slot", "v5_slot"],
+                    help="畫面和摘要用哪一種判定（預設主流程 v7，要有口鼻小塊模型和 RetinaFace 模型檔；v6 不跑 RetinaFace；"
+                         "v3 只看找不找得到臉；"
                          "v4 多檢查口鼻是不是膚色）。CSV 都記")
     ap.add_argument("--no-window", action="store_true", help="判讀但不開視窗，跑 --seconds 秒")
     ap.add_argument("--channels", help="同時讀很多路（只解碼），例如 1-16、1-4、1,3,5")
@@ -315,7 +319,8 @@ def main():
         writer = csv.writer(log)
         writer.writerow(["clock", "t", "key", "label", "verdict", "v3_person", "persons", "persons_in_slot",
                          "faces_in_slot", "face_px", "face_scores", "ms", "stream", "width", "height", "slot", "rot",
-                         "rtmo_hef", "mode", "v3_slot", "v4_slot", "v5_tier", "mouth_skin", "v6_slot", "mouth_p"])
+                         "rtmo_hef", "mode", "v3_slot", "v4_slot", "v5_tier", "mouth_skin", "v6_slot", "mouth_p",
+                         "v7_slot", "retina"])
         if args.record:
             rec = cv2.VideoWriter(f"{stem}.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 1 / INFER_EVERY,
                                   (first.shape[1], first.shape[0]))
@@ -343,7 +348,7 @@ def main():
                              f"{out['ms']:.0f}", host, frame.shape[1], frame.shape[0],
                              ",".join(f"{v:g}" for v in slot), args.rot, os.environ.get("FG_RTMO_HEF", ""),
                              args.mode, out["v3_slot"], out["v4_slot"], out["v5_tier"], out["mouth_skin"],
-                             out["v6_slot"], out["mouth_p"]])
+                             out["v6_slot"], out["mouth_p"], out["v7_slot"], out["retina"]])
         if not window:
             time.sleep(0.02)
             continue
