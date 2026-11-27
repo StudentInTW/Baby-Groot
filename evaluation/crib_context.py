@@ -10,8 +10,9 @@ crib_context.py
 空床參考畫面：床位檔的 empty_ref 欄（影片第幾秒是空床）；實機是安裝時拍一張。
 
 用法：
-    uv run python -m evaluation.crib_context                    # 有空床參考的影片（補拍的 IMG_8429、IMG_8432）
+    uv run python -m evaluation.crib_context                    # 有空床參考的影片（月子中心的每床鏡頭；手持拍的、不像月子中心的不跑，見 HANDHELD、NOT_NURSERY）
     uv run python -m evaluation.crib_context IMG_8115           # 其他單床影片（沒有空床參考的話，只有「照護中暫停」）
+    uv run python -m evaluation.crib_context --fps 1 --phase 0  # 每秒 1 幀（從存好的每秒 5 幀判定抽幀；phase 0–4 換起點）
 輸出：outputs/crib_context/<影片>_context.csv（每幀特徵與狀態）、<影片>_context.png（時間軸）、終端機摘要
 """
 
@@ -37,18 +38,26 @@ ROOT = Path(__file__).resolve().parent.parent
 EVAL_DIR = ROOT / "outputs" / "video_eval"
 OUT_DIR = ROOT / "outputs" / "crib_context"
 FPS = 5              # 要跟 eval_video.py 存每幀判定時一樣
-COLORS = {"ok": (80, 180, 80), "alert": (60, 60, 220), "care": (200, 140, 40), "empty": (170, 170, 170)}
+# 不給影片名稱時不跑的：手持拍的影片（2026/11/26 Harry 確認 10/10 補拍的 IMG_8429、IMG_8432 都是手持拍的、會晃）。
+# 照護中看床位邊緣的移動、空床比對參考畫面，兩個都假設鏡頭固定；要看還是可以明寫名字跑。
+HANDHELD = {"IMG_8429", "IMG_8432"}
+# 不給影片名稱時也不跑：鏡頭偏遠、不像月子中心的每床鏡頭（2026/11/26 Harry：IMG_8741 不當評估；它本來就是 v6 的訓練影片）。
+NOT_NURSERY = {"IMG_8741"}
+COLORS ={"ok": (80, 180, 80), "alert": (60, 60, 220), "care": (200, 140, 40), "empty": (170, 170, 170)}
 
 
-def features(name, slot):
-    """每秒 FPS 幀（跟 eval_video.py 同一批幀）：(秒, 邊緣移動比例, 跟空床參考的色差或 None)。"""
+def features(name, slot, fps=FPS, phase=0):
+    """每秒 fps 幀（預設跟 eval_video.py 同一批幀）：(秒, 邊緣移動比例, 跟空床參考的色差或 None)。
+    fps 比 FPS 低時，從每秒 FPS 幀那批裡每隔幾幀取一幀（時間才對得上存好的每幀判定）；phase＝從那批的第幾幀開始取。"""
     cap = cv2.VideoCapture(str(video_labels.find_video(name)))
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     feat = EdgeFeatures(slot["rect"], read_empty_ref(cap, slot))
-    step = max(1, round(src_fps / FPS))
+    step5 = max(1, round(src_fps / FPS))
+    step = step5 * max(1, round(FPS / fps))
+    start = phase * step5
     rows, i = [], 0
     while cap.grab():
-        if i % step == 0:
+        if i >= start and (i - start) % step == 0:
             _, frame = cap.retrieve()
             rows.append((round(i / src_fps, 3), *feat.update(frame)))
         i += 1
@@ -63,13 +72,13 @@ def saved_fps(path):
     return 1 / statistics.median(gaps) if gaps else FPS
 
 
-def run(name, ann, mode=None):
+def run(name, ann, mode=None, fps=FPS, phase=0, tag=""):
     doll, slot = next(iter(ann["slots"].items()))
     frames = {float(r["t"]): r for r in read_csv(EVAL_DIR / f"{name}_frames.csv") if r["doll"] == doll}
     base, ctx, rows = AlertState(3, 2, 1), CribState(), []
     mode = mode or main_mode(next(iter(frames.values()), {}))
-    print(f"{name}：燈號依 {mode}")
-    for t, motion, diff in features(name, slot):
+    print(f"{name}：燈號依 {mode}" + (f"｜每秒 {fps:g} 幀、起點 {phase}" if fps != FPS else ""))
+    for t, motion, diff in features(name, slot, fps, phase):
         r = frames.get(t)
         if r is None:
             continue
@@ -79,14 +88,14 @@ def run(name, ann, mode=None):
                      "hidden": int(hidden), "motion": round(motion, 4), "ref_diff": "" if diff is None else round(diff, 1),
                      "base": "alert" if base.update(t, hidden) else "ok", "context": ctx.update(t, hidden, motion, diff)})
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(OUT_DIR / f"{name}_context.csv", "w", newline="", encoding="utf-8-sig") as fh:
+    with open(OUT_DIR / f"{name}_context{tag}.csv", "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
     return rows
 
 
-def score(name, ann, rows):
+def score(name, ann, rows, fps=FPS):
     """逐段比較：原本的 3 秒規則（base）vs 加上床位情境（context）。"""
     def at(seg):
         return [r for r in rows if seg["start"] <= r["t"] <= seg["end"]]
@@ -107,7 +116,7 @@ def score(name, ann, rows):
                 res[m] = {"red": any(r[m] == "alert" for r in late),
                           "gray": sum(r[m] == "empty" for r in late) / max(len(late), 1),
                           "end_gray": rs[-1][m] == "empty", "red_before": rs[0][m] == "alert",
-                          "red_secs": sum(r[m] == "alert" for r in rs) / FPS}
+                          "red_secs": sum(r[m] == "alert" for r in rs) / fps}
         if seg["label"] == "alert":  # 口鼻沒被蓋、但鏡頭看不到（staged unseen）不算危險，另外列
             kind = "unseen" if seg["staged"] == "unseen" else "danger"
         else:
@@ -163,7 +172,7 @@ def summarize(outs):
               f"｜空床結束時灰燈 {sum(r[m]['end_gray'] for r in empty)}/{len(empty)}（紅燈秒數 {reds}）")
 
 
-def draw(name, rows, ann, out_path):
+def draw(name, rows, ann, out_path, fps=FPS):
     """時間軸：標註、原本的狀態、加情境的狀態，下面畫邊緣移動量和空床色差。"""
     W, left, row_h = 1800, 120, 26
     dur = rows[-1]["t"] + 1
@@ -184,14 +193,15 @@ def draw(name, rows, ann, out_path):
         y += row_h
         cv2.putText(img, label, (10, y + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         for r in rows:
-            cv2.rectangle(img, (xs(r["t"]), y + 3), (max(xs(r["t"]) + 1, xs(r["t"] + 0.2)), y + row_h - 3),
+            cv2.rectangle(img, (xs(r["t"]), y + 3), (max(xs(r["t"]) + 1, xs(r["t"] + 1 / fps)), y + row_h - 3),
                           COLORS[r[key]], -1)
     for key, label, scale, th in (("motion", "edge motion", 0.2, MOTION_TH), ("ref_diff", "diff to empty", 60, EMPTY_TH)):
         y += row_h + 10 if key == "motion" else 70
         cv2.putText(img, label, (10, y + 35), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
         cv2.line(img, (left, y + 60 - int(60 * th / scale)), (W - 20, y + 60 - int(60 * th / scale)), (0, 0, 255), 1)
         for r in rows:
-            if r[key] == "":
+            # 每秒 1 幀時偶爾前後兩幀差太多，對齊後床位邊緣一圈沒剩像素，移動量是 NaN（2026/11/26）：圖上不畫
+            if r[key] == "" or np.isnan(float(r[key])):
                 continue
             v = min(float(r[key]) / scale, 1.0)
             cv2.line(img, (xs(r["t"]), y + 60), (xs(r["t"]), y + 60 - int(60 * v)), (120, 120, 120), 1)
@@ -200,13 +210,19 @@ def draw(name, rows, ann, out_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("videos", nargs="*", help="影片名稱；不給就跑床位檔裡有空床參考（empty_ref）的影片")
+    ap.add_argument("videos", nargs="*", help="影片名稱；不給就跑床位檔裡有空床參考（empty_ref）的影片（HANDHELD、NOT_NURSERY 不跑）")
     ap.add_argument("--mode", choices=["v6_slot", "v3_slot", "v4_slot", "v5_slot"],
                     help="依哪一種判定（預設主流程 v6_slot；每幀判定沒有 v6 欄時 v3_slot）")
+    ap.add_argument("--fps", type=float, default=FPS,
+                    help=f"每秒判讀幾幀（預設 {FPS}）；比較低時從存好的每秒 {FPS} 幀判定裡抽幀，輸出檔名另加 _<幀率>fps_p<起點>")
+    ap.add_argument("--phase", type=int, default=0, help="抽幀時從每秒 5 幀那批的第幾幀開始（0 到 5/fps−1）")
     args = ap.parse_args()
+    if args.phase >= max(1, round(FPS / args.fps)):
+        ap.error(f"--phase 要小於 {round(FPS / args.fps)}")
+    tag = "" if args.fps == FPS else f"_{args.fps:g}fps_p{args.phase}"
     anns = video_labels.load()
-    names = args.videos or sorted(v for v, a in anns.items()
-                                  if any(s["empty_ref"] is not None for s in a["slots"].values()))
+    names = args.videos or sorted(v for v, a in anns.items() if v not in HANDHELD | NOT_NURSERY
+                                  and any(s["empty_ref"] is not None for s in a["slots"].values()))
     outs = []
     for name in names:
         ann = anns[name]
@@ -219,10 +235,10 @@ def main():
             print(f"[略過] {name} 的每幀判定是每秒約 {saved_fps(path):.0f} 幀，這支要每秒 {FPS} 幀；"
                   f"先用預設重跑：uv run python -m evaluation.eval_video {name}")
             continue
-        rows = run(name, ann, args.mode)
-        out = score(name, ann, rows)
+        rows = run(name, ann, args.mode, args.fps, args.phase, tag)
+        out = score(name, ann, rows, args.fps)
         report(name, out)
-        draw(name, rows, ann, OUT_DIR / f"{name}_context.png")
+        draw(name, rows, ann, OUT_DIR / f"{name}_context{tag}.png", args.fps)
         outs.append(out)
     if outs:
         summarize(outs)

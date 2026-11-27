@@ -27,7 +27,8 @@ hailo/prep_calib.py
 口鼻小塊模型（v6，--model mouth）：
   uv run python -m hailo.prep_calib --model mouth
   直接用 experiments/mouth_patch_build.py 存的小塊（outputs/airway3/patch/<組>/p/，1.6 倍範圍），取中間 96×96
-  （＝主流程 infant_face_v6.mouth_patch 切的那塊）。校正只用 calib 那一半（跟訓練同一批，calib、calib_1123）；
+  （＝主流程 infant_face_v6.mouth_patch 切的那塊）。校正只用 calib 那一半（跟訓練同一批）：11/26 起是第二版模型的
+  calib_r2、calib_1123_r2（新分法，含床位裡 0.3–0.8 分的臉）；第一版用的是 calib、calib_1123（--calib-sets 可換回）；
   比對用 hold、hold_1123、field（308 床娃娃），只拿來比量化前後，不調任何東西。真實嬰兒、只能內部評估的影片的小塊不收。
   輸出 mouth_calib.npy（預設 1024 張）、mouth_hold.npy（全部），(N, 96, 96, 3) 的 BGR uint8。
 """
@@ -67,18 +68,19 @@ B1123_HOLD = tuple(f"寶寶3{s}" for s in (
     "右側1", "右側1蓋臉", "右側1遮", "右側2", "右側2蓋臉", "右側3", "右側3蓋臉", "右側3遮", "右側4", "右側4蓋臉", "右側4遮",
     "左側1蓋臉", "左側1遮", "左側2", "左側2蓋臉", "左側2遮", "左側3", "左側3蓋臉", "左側3遮", "左側4蓋臉", "左側4遮",
     "正躺蓋臉", "趴睡", "趴睡偏右"))
+# 11/17 隊友拍的一批（寶寶1：另一隻娃娃，側躺左右、蓋口鼻、趴睡；手機從正上方直拍）。
+B1117 = ("寶寶1右側、遮口鼻", "寶寶1左側、遮口鼻", "寶寶1正躺、遮口鼻", "寶寶1臉雙邊微側、遮住口鼻", "寶寶1趴著、抱離床")
 SPLITS = {
-    # 每床鏡頭的兩支（8429、8432）各放一邊；8429 比較長、有空床，留給比對。
+    # 每床鏡頭的兩支（8429、8432）原本各放一邊；2026/11/26 確認兩支都是手持拍的、會晃，8429 改放 calib（見下面）。
     # 11/08 台南那批（一隻照護娃娃、每床直拍：影片 IMG_8735–8744、照片第 4 批）整批放 calib；
     # IMG_8743 每一幀都有手臂，沒有標註、不收。rtmo_D1.hef、yunet_A.hef 的校正圖是加這批之前做的。
-    # 11/17 隊友拍的一批（另一隻娃娃，側躺左右、蓋口鼻、趴睡；手機從正上方直拍）整批放 calib。
-    "calib": {"videos": ("IMG_8115", "IMG_8150", "IMG_8432",
-                         "IMG_8735", "IMG_8739", "IMG_8740", "IMG_8741", "IMG_8742", "IMG_8744",
-                         "寶寶1右側、遮口鼻", "寶寶1左側、遮口鼻", "寶寶1正躺、遮口鼻", "寶寶1臉雙邊微側、遮住口鼻",
-                         "寶寶1趴著、抱離床") + B1123_CALIB,
+    # 2026/11/26 重新分（第二版口鼻小塊模型訓練之前定的）：IMG_8429 手持拍的，hold → calib；
+    # 寶寶1（11/17 那批）畫面比較像真的嬰兒床，calib → hold。v6 第一版的模型（mouth_patch_ens3.onnx）是用舊分法訓練的。
+    "calib": {"videos": ("IMG_8115", "IMG_8150", "IMG_8429", "IMG_8432",
+                         "IMG_8735", "IMG_8739", "IMG_8740", "IMG_8741", "IMG_8742", "IMG_8744") + B1123_CALIB,
               "batches": ("2", "3", "4")},
     # 嬰兒翻身：AI 生成的灰階夜視俯拍，唯一像 IR 的畫面；授權（生成工具的條款）確認前只當比對用
-    "hold": {"videos": ("IMG_8116", "IMG_8184", "IMG_8429", "嬰兒翻身") + B1123_HOLD, "batches": ("1",)},
+    "hold": {"videos": ("IMG_8116", "IMG_8184", "嬰兒翻身") + B1117 + B1123_HOLD, "batches": ("1",)},
     # 場域（只評估，跟 hold 一樣不能訓練、不能調門檻）：11/17 第二間月子中心 308 床的每床鏡頭錄影（RTSP 主碼流），
     # 一隻沒在訓練資料裡出現過的娃娃。標註在 labels/local_video_*.csv（不進 repo）；同一批錄影後面的真實嬰兒已切掉、不收。
     # prep_calib 自己只用 calib／hold，不會讀這一組。
@@ -288,11 +290,13 @@ def main():
     ap.add_argument("--hold-n", type=int, default=384, help="娃娃比對圖張數")
     ap.add_argument("--every", type=float, default=3.0, help="影片每幾秒取一幀")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--calib-sets", nargs="+", default=["calib_r2", "calib_1123_r2"],
+                    help="口鼻小塊的校正用哪幾組（outputs/airway3/patch/<組>；第一版模型是 calib calib_1123）")
     ap.add_argument("--skip-doll", action="store_true")
     args = ap.parse_args()
 
     if args.model == "mouth":
-        save("mouth_calib", mouth_patches(("calib", "calib_1123"), args.calib_n or 1024, args.seed))
+        save("mouth_calib", mouth_patches(tuple(args.calib_sets), args.calib_n or 1024, args.seed))
         save("mouth_hold", mouth_patches(("hold", "hold_1123", "field")))
         return
     args.calib_n = args.calib_n or 512

@@ -13,7 +13,8 @@ VLM 不即時跑（筆電 GPU 在另一個虛擬環境），畫面上不顯示 V
     uv run python -m demo.live_view IMG_8432 --start 80                 # 開視窗；q／Esc 結束、空白鍵暫停
     uv run python -m demo.live_view IMG_8432 --start 80 --end 112 --save outputs/demo/live_IMG_8432.mp4   # 同時把視窗畫面存一份
     uv run python -m demo.live_view IMG_8432 --start 80 --fault error@90          # 測離線狀態（紫燈）：第 90 秒起判讀出錯 5 秒
-    FG_CHIP_PROCESS=1 FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m demo.live_view IMG_8432 --start 80 --fault hang@90 kill@105
+    uv run python -m demo.live_view IMG_8432 --start 80 --chip                    # 決賽展演的設定：RTMO、口鼻模型在 UGen300（CHIP_FINALS）
+    uv run python -m demo.live_view IMG_8432 --start 80 --chip --fault hang@90 kill@105   # 測晶片卡住、當掉時的紫燈
 錄螢幕：Windows 按 Win+Alt+R（Xbox Game Bar）或用 OBS。
 離線（紫燈）：判讀出錯、或超過 2 秒沒判讀完（晶片斷線重開、卡住）就不顯示最後的燈號，見 crib_state.Liveness。
 """
@@ -38,6 +39,9 @@ from pipeline import crib_detect, crib_state, infant_face_v3, infant_face_v5, in
 from pipeline.face_common import FACE_SCORE_TH, create_face_detector
 
 FPS = crib_context.FPS  # 每秒判讀幾幀（跟 eval_video.py、crib_context.py 一樣）
+# 決賽展演的晶片設定（2026/11/25 定，加 --chip 就套用）：RTMO（D1）和口鼻小塊模型（F，全部 16 位元）在 UGen300，YuNet 留在 CPU；
+# 晶片放子程序、一次送一張（長時間測試最穩的接法，見 hailo/結果.md「裝置斷線」）。開發、重訓時不加：口鼻模型在 CPU 跑，重訓不用重編 HEF。
+CHIP_FINALS = {"FG_CHIP_PROCESS": "1", "FG_RTMO_HEF": "model/rtmo_D1.hef", "FG_MOUTH_HEF": "model/mouth_F.hef"}
 TITLE = f"{PRODUCT} · live"
 
 
@@ -259,7 +263,8 @@ def main():
     ap.add_argument("--end", type=float, help="播到第幾秒（預設播完）")
     ap.add_argument("--fps", type=float, default=FPS, help=f"每秒判讀幾幀（預設 {FPS}，跟評估一樣）")
     ap.add_argument("--det-th", type=float, default=0.15, help="RTMO 找人門檻（預設 0.15，跟 eval_video.py 一樣）")
-    ap.add_argument("--device", default="laptop CPU (Intel i7-11800H)", help="右上角「Running on」的文字")
+    ap.add_argument("--chip", action="store_true", help="用決賽展演的晶片設定（CHIP_FINALS：RTMO、口鼻模型在 UGen300）")
+    ap.add_argument("--device", help="右上角「Running on」的文字（預設照環境變數寫哪些模型在 UGen300）")
     ap.add_argument("--crib", default="Crib 07", help="床位名稱")
     ap.add_argument("--width", type=int, default=1600, help="視窗寬度（高度＝寬度×9/16）")
     ap.add_argument("--save", help="同時把視窗畫面存成影片（.mp4）")
@@ -270,6 +275,15 @@ def main():
                     help="測試離線狀態：影片第幾秒製造故障，可以給好幾個。error＝判讀連續出錯 5 秒（不用晶片）；"
                          "kill＝砍掉晶片子程序；hang＝暫停晶片子程序（後兩個要 FG_CHIP_PROCESS=1）")
     args = ap.parse_args()
+    if args.chip:   # 要在載入模型之前設；殘留的 YuNet HEF、合批設定拿掉，免得混進來
+        for k in ("FG_YUNET_HEF", "FG_CHIP_BATCH"):
+            os.environ.pop(k, None)
+        os.environ.update(CHIP_FINALS)
+    if args.device is None:
+        on_chip = [n for n, env in (("RTMO", "FG_RTMO_HEF"), ("YuNet", "FG_YUNET_HEF"), ("mouth/nose", "FG_MOUTH_HEF"))
+                   if os.environ.get(env)]
+        args.device = f"ASUS UGen300 ({', '.join(on_chip)}) + laptop CPU" if on_chip else "laptop CPU (Intel i7-11800H)"
+    print(f"Running on: {args.device}" + ("（晶片在子程序）" if os.environ.get("FG_CHIP_PROCESS") == "1" else ""))
 
     ann = video_labels.load()[args.video]
     if len(ann["slots"]) != 1:

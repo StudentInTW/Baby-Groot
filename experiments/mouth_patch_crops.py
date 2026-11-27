@@ -4,13 +4,15 @@ mouth_patch_crops.py（2026/11/22 起；v6 口鼻小塊模型的資料第 1 步�
   - crops_<half>.csv 決定 mouth_patch_build.py 要跑哪些幀（影片第幾秒、照片哪一隻娃娃、標籤）；
   - crops_old/ 的頭部特寫下緣（包巾、衣服）是 mouth_patch_train.py「貼布」增強的布料（只用 calib 那一半）。
 跟 experiments/airway_crops.py 同一套取樣：照片配到的娃娃、影片乾淨片段每秒 --fps 幀（片段頭尾各留 0.25 秒）；
-分兩半照 hailo/prep_calib.py 的 SPLITS。calib 另外加 11/19 的側睡角度序列（dataset/20261119.MOV，
-標註在 labels/train_20261119.csv：只拿來訓練，不在 doll_video_labels.csv 裡，不算進 eval_video 的合計）。
+分兩半照 hailo/prep_calib.py 的 SPLITS。calib 另外加只拿來訓練的影片（TRAIN_ONLY：--train-only，預設 11/19 的側睡角度序列
+dataset/20261119.MOV，標註在 labels/train_20261119.csv；不在 doll_video_labels.csv 裡，不算進 eval_video 的合計）。
 特寫存兩種大小：crops_old（邊長＝人框長邊 × 0.6，跟主流程給 YuNet 的頭部特寫一樣）、crops_tight（× 0.4，對照用）。
 
 v6 的模型（model/mouth_patch_ens3.onnx）用的是這兩次的輸出：
     uv run python -m experiments.mouth_patch_crops --half calib --exclude-prefix 寶寶2                 # 11/22，找人門檻 0.3
     uv run python -m experiments.mouth_patch_crops --half calib --prefix 寶寶2 --suffix _1123 --det-th 0.15   # 11/23 那批
+第二版（2026/11/26，新分法：IMG_8429 進 calib、寶寶1 改放 hold，再加 11/26 的台南影片）：
+    uv run python -m experiments.mouth_patch_crops --half calib --exclude-prefix 寶寶2 --suffix _r2 --train-only 20261119 20261126Tainan
 評估那一半（只給實驗看，正式評估用 eval_video／eval_doll／eval_syrip）：--half hold、--half field。
 輸出：outputs/airway3/crops_<half><suffix>.csv、crops_old/、crops_tight/（outputs/ 不進 repo）
 """
@@ -24,8 +26,11 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "outputs" / "airway3"          # 口鼻小塊模型的中間檔都放這裡
-LABELS_1119 = ROOT / "labels" / "train_20261119.csv"
-VIDEO_1119 = ROOT / "dataset" / "20261119.MOV"
+# 只拿來訓練的影片（標註不在 doll_video_labels.csv，不算進 eval_video）：名稱 → (標註檔, 床位, 把床位轉正要轉幾度)
+TRAIN_ONLY = {
+    "20261119": (ROOT / "labels" / "train_20261119.csv", (0.0, 0.0, 1.0, 1.0), 0),          # 側睡角度序列；整個畫面就是床
+    "20261126Tainan": (ROOT / "labels" / "train_20261126.csv", (0.0, 0.0, 1.0, 0.9), 180),  # 台南照護娃娃：側睡角度、趴睡、布蓋口鼻；頭朝畫面下方
+}
 TARGET = {"ok": 1, "alert": 0}
 FRACS = {"old": 1.0, "tight": 0.4 / 0.6}
 
@@ -52,6 +57,8 @@ def main():
     ap.add_argument("--prefix", default="", help="只做名稱這樣開頭的影片（不做照片和 20261119），例如 寶寶2")
     ap.add_argument("--exclude-prefix", default="", help="不做名稱這樣開頭的影片")
     ap.add_argument("--suffix", default="", help="輸出 crops_<half><suffix>.csv")
+    ap.add_argument("--train-only", nargs="*", default=["20261119"], choices=list(TRAIN_ONLY),
+                    help="calib 另外加的只訓練影片（預設 20261119，跟 v6 第一版一樣）")
     ap.add_argument("--det-th", type=float, default=0,
                     help="RTMO 找人門檻（預設不改＝infant_face_v3 的 0.3；主流程 eval_video、live_view 用 0.15）")
     args = ap.parse_args()
@@ -93,11 +100,13 @@ def main():
         videos = [v for v in videos if not v[0].startswith(args.exclude_prefix)]
     if args.prefix:
         videos = [v for v in videos if v[0].startswith(args.prefix)]
-    elif half == "calib":   # 11/19 側睡角度序列：只拿來訓練，標註不在 doll_video_labels.csv
-        segs = list(csv.DictReader(open(LABELS_1119, encoding="utf-8-sig")))
-        for s in segs:
-            s["start"], s["end"] = float(s["start"]), float(s["end"])
-        videos.append(("20261119", segs, {"S": {"rect": (0.0, 0.0, 1.0, 1.0)}}, VIDEO_1119))
+    elif half == "calib":   # 只拿來訓練的影片（TRAIN_ONLY），標註不在 doll_video_labels.csv
+        for name in args.train_only:
+            lab, rect, _ = TRAIN_ONLY[name]
+            segs = list(csv.DictReader(open(lab, encoding="utf-8-sig")))
+            for s in segs:
+                s["start"], s["end"] = float(s["start"]), float(s["end"])
+            videos.append((name, segs, {"S": {"rect": rect}}, video_labels.find_video(name)))
     for video, segs, slots, path in videos:
         slots3, cap, n = v3_slots(video), cv2.VideoCapture(str(path)), 0
         for seg in segs:

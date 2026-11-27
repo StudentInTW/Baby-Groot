@@ -21,6 +21,10 @@ v6 的模型是這三顆（種子 0、1、2；筆電 RTX 3050 各約 4 分鐘）
     .venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib calib_1123 --seed 0 --tag p_base_s0
     .venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib calib_1123 --seed 1 --tag p_base_s1
     .venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib calib_1123 --seed 2 --tag p_base_s2
+第二版（2026/11/26）：新分法的 calib（mouth_patch_crops --suffix _r2）＋床位裡 0.3–0.8 分的臉（mouth_patch_build --low）。
+低分的臉的標籤：黃、紅的幀＝沒露出；綠的幀只在「主流程的臉 0 張、低分的臉剛好 1 張」時當露出，其他不訓練
+（綠的幀裡多出來的低分臉可能是耳朵、手上的假臉）。--sets 只讀這幾組（不讀評估組，也不替它們預測）：
+    .venv-vlm/Scripts/python -m experiments.mouth_patch_train --train calib_r2 calib_1123_r2 --sets calib_r2 calib_1123_r2 --seed 0 --tag p_r2_s0
 """
 import argparse
 import csv
@@ -43,15 +47,17 @@ A3 = ROOT / "outputs" / "airway3"
 P = A3 / "patch"
 TIMM_R18 = ROOT / "model" / "pretrained" / "resnet18.a1_in1k" / "model.safetensors"
 SETS = ("calib", "calib_1123", "hold", "hold_1123", "field")
-TRAINABLE = ("calib", "calib_1123")   # 只有 calib 那一半能訓練；其他只評估
+TRAINABLE = ("calib", "calib_1123", "calib_r2", "calib_1123_r2")   # 只有 calib 那一半能訓練；其他只評估
+CROPS_OF = {"calib": "crops_calib.csv", "calib_1123": "crops_calib_1123.csv",    # 貼布的布料從哪個頭部特寫清單取（只取訓練組）
+            "calib_r2": "crops_calib_r2.csv", "calib_1123_r2": "crops_calib_1123.csv"}
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
 
 
 def source(s, g):
     """取樣平衡用的資料批次。"""
-    if s == "calib_1123":
+    if s in ("calib_1123", "calib_1123_r2"):
         return "寶寶2"
-    if g.startswith(("photo_batch2", "photo_batch3")) or g in ("IMG_8115", "IMG_8150", "IMG_8432"):
+    if g.startswith(("photo_batch2", "photo_batch3")) or g in ("IMG_8115", "IMG_8150", "IMG_8429", "IMG_8432"):
         return "百貨公司"
     if g.startswith("photo_batch4") or g.startswith("IMG_87"):
         return "台南家裡"
@@ -78,15 +84,17 @@ def load_rows(sets):
             y = 1 if r["label"] == "ok" else 0
             if r["staged"] == "warn":          # 不確定的不訓練
                 y = -1
+            if f.get("low") == "1" and y == 1 and not (r["faces"] == "0" and r.get("n_low") == "1"):
+                y = -1                          # 綠的幀裡低分的臉：只有主流程的臉 0 張、低分的臉剛好 1 張才當露出
             rows.append({**f, "set": s, "group": r["group"], "label": r["label"], "staged": r["staged"], "y": y,
                          "path": str(P / s / "p" / f["patch"])})
     return rows
 
 
-def cloth_bank(n=600, seed=0):
-    """calib 頭部特寫的下緣（下巴以下，多半是包巾、衣服）切成方塊當布料。只用訓練那一半。"""
+def cloth_bank(files=("crops_calib.csv", "crops_calib_1123.csv"), n=600, seed=0):
+    """calib 頭部特寫的下緣（下巴以下，多半是包巾、衣服）切成方塊當布料。只用訓練那一半（files＝訓練組的頭部特寫清單）。"""
     rng = random.Random(seed)
-    rows = [r for f in ("crops_calib.csv", "crops_calib_1123.csv") for r in read_csv(A3 / f) if r["crop"]]
+    rows = [r for f in files for r in read_csv(A3 / f) if r["crop"]]
     bank = []
     for r in rng.sample(rows, min(n, len(rows))):
         img = cv2.imdecode(np.fromfile(str(A3 / "crops_old" / r["crop"]), np.uint8), cv2.IMREAD_COLOR)
@@ -201,6 +209,7 @@ def main():
     ap.add_argument("--no-paste", action="store_true")
     ap.add_argument("--predict", action="store_true", help="不訓練：讀 model_patch_<tag>.pt，重新預測全部的組（後來才建好的組）")
     ap.add_argument("--tag", required=True)
+    ap.add_argument("--sets", nargs="+", default=list(SETS), help="讀哪幾組的小塊（訓練＋預測）；預設全部")
     args = ap.parse_args()
     torch.manual_seed(args.seed); random.seed(args.seed); np.random.seed(args.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -210,7 +219,7 @@ def main():
         if s not in TRAINABLE:
             raise SystemExit(f"{s} 只能評估、不能訓練")
         spec[s] = set(g.split(",")) if g else None
-    rows = load_rows(SETS)
+    rows = load_rows(args.sets)
     train_rows = [r for r in rows if r["set"] in spec and (spec[r["set"]] is None or r["group"] in spec[r["set"]])
                   and r["y"] in (0, 1)]
     for s, gs in spec.items():
@@ -223,7 +232,7 @@ def main():
         model.load_state_dict(torch.load(P / f"model_patch_{args.tag}.pt", map_location=dev))
         model.to(dev)
         return predict(model, rows, train_rows, args.tag, dev, time.perf_counter())
-    bank = None if args.no_paste else cloth_bank(seed=args.seed)
+    bank = None if args.no_paste else cloth_bank(sorted({CROPS_OF[s] for s in spec}), seed=args.seed)
     by_src = Counter((source(r["set"], r["group"]), r["y"]) for r in train_rows)
     print(f"[{args.tag}] 訓練 {len(train_rows)} 張臉 {dict(Counter(r['y'] for r in train_rows))}（1＝露出）"
           f"｜{dict(sorted(by_src.items()))}｜布料 {len(bank) if bank else 0}｜{dev}", flush=True)
