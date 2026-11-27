@@ -17,12 +17,13 @@ SIDS; it works alongside safe-sleep practice, not instead of it. The AI judges l
 | Part | Status |
 | --- | --- |
 | Per-crib pipeline: pose → face → mouth/nose check → 3-second alert | Runs on a laptop, with the pose model on the UGen300 or on the CPU; evaluated on doll videos, doll photos and real infant photos |
-| Mouth/nose patch model (v6, the main pipeline since 2026-11-24) | Trained on one half of our own doll footage only; scored on the other half, on doll footage from a postpartum nursery's own camera and on real infant photos (see Results). During development it runs on the host CPU with ONNX Runtime (one thread, about 19 ms per face), so a retrained model needs no recompiling. **Also compiled for the Hailo-10H and runs on the UGen300** (set `FG_MOUTH_HEF`); the build we use has every layer in 16-bit (`model/mouth_F.hef`), and the demo configuration (`demo.live_view --chip`) runs it on the chip next to RTMO-m. With both on the chip, the 30 held-out doll videos give the CPU's counts except one extra false alert, which comes from RTMO-m. With only this model on the chip, the doll photos give the same counts, and SyRIP's 81 nursery-like photos get 1 more false alert (10 vs 9). Its speed cost depends on how the chip is shared: with each crib's thread sending its own frames it costs nothing measurable, but in the demo configuration (chip in a child process, one frame at a time) the chip is the bottleneck and the total drops from 21.1 frames per second with this model on the CPU to 16.2 with it on the chip (8 cribs, a face in every frame; see Hardware integration). The demo configuration ran 8 hours with 8 cribs without a USB disconnect |
+| Second face detector, RetinaFace (v7, the main pipeline since 2026-11-27) | When v6 finds no uncovered face in a crib, RetinaFace (MobileNet v1, 640×480 input) looks again and the mouth/nose patch model checks what it finds. On the 31 held-out doll videos plus 3 nursery-camera videos it cuts the safe segments with a false alert from 14/51 to 6/51 (16 to 7 with everything on the chip) and still catches every danger v6 catches; on the photos it misses one more hidden face in each set (see Results). Runs on the UGen300 in the demo configuration (about 16 ms per call) |
+| Mouth/nose patch model (v6; v7 builds on it) | Trained on one half of our own doll footage only; scored on the other half, on doll footage from a postpartum nursery's own camera and on real infant photos (see Results). During development it runs on the host CPU with ONNX Runtime (one thread, about 19 ms per face), so a retrained model needs no recompiling. **Also compiled for the Hailo-10H and runs on the UGen300** (set `FG_MOUTH_HEF`); the build we use has every layer in 16-bit (`model/mouth_F.hef`), and the demo configuration (`demo.live_view --chip`) runs it on the chip next to RTMO-m. With both on the chip, the 30 held-out doll videos give the CPU's counts except one extra false alert, which comes from RTMO-m. With only this model on the chip, the doll photos give the same counts, and SyRIP's 81 nursery-like photos get 1 more false alert (10 vs 9). Its speed cost depends on how the chip is shared: with each crib's thread sending its own frames it costs nothing measurable, but in the demo configuration (chip in a child process, one frame at a time) the chip is the bottleneck and the total drops from 21.1 frames per second with this model on the CPU to 16.2 with it on the chip (8 cribs, a face in every frame; see Hardware integration). The demo configuration ran 8 hours with 8 cribs without a USB disconnect |
 | Caregiving pause, empty-crib gray state | Prototype, tested on five per-crib doll clips from fixed cameras: one of ours (a normal pick-up) and four from two postpartum nurseries' own cameras. Two hand-held clips are left out, because this logic assumes a fixed camera. One known problem: on one nursery camera a danger was shown as an empty crib for 4.4 s |
 | VLM second check (Qwen2-VL-2B) | Works as a laptop GPU experiment. Hailo's precompiled HEF also runs on the UGen300 (about 1 s per question, in the same process as the pipeline), but there it calls every side face "not visible", so it is **not usable on the chip yet** (see Hardware integration) |
 | Pose model (RTMO-m) on the Hailo-10H | **Runs on the UGen300 inside the pipeline.** Plain 8-bit quantization lost too much accuracy, so we retrained the network to tolerate 8-bit (quantization-aware training). On all three test sets the results match the original float model on the CPU |
 | YuNet face model on the Hailo-10H | **Runs on the UGen300 inside the pipeline** (set `FG_YUNET_HEF`). Its scores differ from OpenCV's by about 0.02, so a few faces near the threshold flip (slightly more false alerts than on the CPU). With YuNet on the chip the USB link drops now and then; with one thread it recovers by itself in 1–3 s (see Hardware integration) |
-| On-chip speed and power | v6 at 720p on a laptop host (i7-11800H), a face in every frame, stream decoding not included, frames per second for all cribs together: 7.9 with everything on the CPU; 27.4 with RTMO-m on the chip and each crib's thread sending its own frames (3.5×), a wiring that drops off USB (twice within 2 minutes in one run); 16.2 in the demo configuration (chip in a child process, one frame at a time, RTMO-m and the 16-bit mouth/nose build on the chip), where the chip is the bottleneck. At the 5 frames per second per crib we evaluate at that is 1, 5 and 3 cribs; at 1 frame per second 7, 27 and 16. On the doll videos, 1 frame per second per crib gives the same results as 5 in every situation (alarms up to 0.8 s later); 0.5 starts to miss (see below). With 25 cribs, the chip taking up to 4 queued frames per call, and the 25 camera streams decoded on the same laptop in hardware, the total is 24.1 frames per second, just under 1 per crib, with the mouth/nose model on the chip (23.4 with it on the CPU); that batching dropped off USB 5 times in a one-hour test (recovered each time), while one frame at a time has run 34 hours without a drop. Power: the UGen300 does not report it; to be measured with a USB-C meter |
+| On-chip speed and power | v7 (2026-11-28, same laptop and frames, RetinaFace on the chip as well): 14.3 frames per second for 8 cribs in the demo configuration and 18.9 with the mouth/nose model on the CPU; with 25 cribs and their 25 camera streams decoded on the same laptop, 14.3 one frame at a time and 18.7–21.8 when the chip takes 2–4 queued frames per call, short of the 25 that 1 frame per second per crib needs. Whether 25 cribs run stably for 8 hours is being tested. Earlier, v6 at 720p on a laptop host (i7-11800H), a face in every frame, stream decoding not included, frames per second for all cribs together: 7.9 with everything on the CPU; 27.4 with RTMO-m on the chip and each crib's thread sending its own frames (3.5×), a wiring that drops off USB (twice within 2 minutes in one run); 16.2 in the demo configuration (chip in a child process, one frame at a time, RTMO-m and the 16-bit mouth/nose build on the chip), where the chip is the bottleneck. At the 5 frames per second per crib we evaluate at that is 1, 5 and 3 cribs; at 1 frame per second 7, 27 and 16. On the doll videos, 1 frame per second per crib gives the same results as 5 in every situation (alarms up to 0.8 s later); 0.5 starts to miss (see below). With 25 cribs, the chip taking up to 4 queued frames per call, and the 25 camera streams decoded on the same laptop in hardware, the total is 24.1 frames per second, just under 1 per crib, with the mouth/nose model on the chip (23.4 with it on the CPU); that batching dropped off USB 5 times in a one-hour test (recovered each time), while one frame at a time has run 34 hours without a drop. Power: not measured yet (the UGen300 does not report it) |
 | Real nursery footage | None yet; a silent pilot needs ethics (IRB) approval first |
 
 ## How it works
@@ -37,7 +38,9 @@ flowchart LR
   crib --> face
   face --> patch["Mouth/nose patch model:<br/>nose-to-chin crop of each face"]
   patch --> vis{"Nose and mouth<br/>visible?"}
-  vis --> state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray,<br/>no judgment = offline"]
+  vis -->|yes| state["Per-crib state machine:<br/>3 s hidden = alert,<br/>caregiving = pause,<br/>empty crib = gray,<br/>no judgment = offline"]
+  vis -->|"no (v7)"| retina["RetinaFace looks again<br/>in the crib, then the<br/>mouth/nose patch model"]
+  retina --> state
   state --> nurse["Nurse-station screen<br/>+ silent text alert"]
   vlm["VLM second check<br/>(Stage II)"] -.->|can ask for a look, never cancels| state
 ```
@@ -59,17 +62,24 @@ Each step and where it lives in the code:
    are uncovered. The crib counts as visible only if at least one face scores 0.5 or more (a fixed threshold, never
    tuned on evaluation data). The crop is sized by the eye-to-mouth distance, not the eye distance, so side faces work
    too. `pipeline/infant_face_v6.py` (`mouth_patch`, `MouthModel`); the crib-level rule is `v6_slot` in `pipeline/crib_detect.py`
-5. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
+5. **Look again when nothing passes (v7, the main pipeline).** Most of v6's remaining false alerts are side faces that
+   YuNet does not find at all, so the patch model never sees them. When no face in a crib passes step 4, a second face
+   detector, RetinaFace (MobileNet v1 from the Hailo Model Zoo, 640×480 input), searches the same upright crib crop; a
+   face scoring 0.7 or more (chosen on the training half of the videos only) goes to the same patch model with the
+   same 0.5 threshold. It runs only on frames v6 judged hidden, so it can only turn hidden into visible: it never adds
+   an alert, and the evaluation checks that no caught danger is lost. `pipeline/infant_face_v7.py`; the crib-level rule
+   is `v7_slot` in `pipeline/crib_detect.py` (`MAIN_MODE`)
+6. **Per-crib state machine.** `AlertState` raises an alert after 3 s hidden and clears it after 2 s visible; a visible
    face must last 1 s before it resets the timer, so one false face does not restart the count. `CribState` pauses the
    timer while an adult's hand moves at the crib edge, and turns an empty crib gray when it matches the crib's empty
    reference photo. Motion never clears an alert that is already sounding. `Liveness` turns a crib purple ("offline,
    check this crib in person") when no judgment has finished for 2 s or the last one failed, instead of leaving the
    last light (possibly green) on screen; when judgments come back after a gap, motion seen before the gap is
    discarded and the gap counts as hidden, so a covered face turns red at once. `pipeline/crib_state.py`
-6. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
+7. **Second check (Stage II).** A small vision-language model looks at the head end of the crib and answers "Can you see
    the baby's nose and mouth?". It can raise a yellow "please look", or rank red alerts, but never cancel one: its answer
    flips on 20–35% of near-identical frames. `experiments/vlm_spike.py`. It is not in the main pipeline; the mouth/nose
-   patch model (step 4) does that job on every frame
+   patch model (steps 4 and 5) does that job on every frame
 
 **Key design choice:** a face detector (and then the mouth/nose patch model) decides whether the face is visible, not the pose model's keypoint confidence.
 Keypoint confidence is trained on "was this point annotated", not "can it be seen": a baby with its face in the sheet
@@ -80,7 +90,7 @@ whether the face can be seen.
 
 | Runs on | What |
 | --- | --- |
-| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | In the demo configuration (`demo.live_view --chip`): RTMO-m and the mouth/nose patch model (16-bit build), with YuNet on the host CPU. YuNet also runs on it (`FG_YUNET_HEF`; kept on the CPU because every call pays the USB round trip and the link drops more often); the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
+| ASUS UGen300 (Hailo-10H, 40 TOPS INT4, 8 GB) over USB-C | In the demo configuration (`demo.live_view --chip`, `demo.live_wall --chip`): RTMO-m, the mouth/nose patch model (16-bit build) and RetinaFace (v7), with YuNet on the host CPU. YuNet also runs on it (`FG_YUNET_HEF`; kept on the CPU because every call pays the USB round trip and the link drops more often); the Qwen2-VL-2B second check also runs on it (experiment, not accurate enough yet) |
 | Host CPU (small PC in the nursery) | Stream decode, crib crops, decoding the models' raw outputs (boxes, keypoints, NMS), the mouth/nose patch model by default (ONNX Runtime), per-crib state machines, event log |
 
 - **HEF compilation** ([`hailo/結果.md`](./hailo/結果.md), plan in [`hailo/轉換計畫.md`](./hailo/轉換計畫.md)):
@@ -168,6 +178,31 @@ whether the face can be seen.
 
   The first version on the same 34 videos: 43/44, 13/51, 14/17. The two extra false alerts on the chip are both on side
   faces in one video from the department-store shoot, the same video where RTMO-m on the chip changed a segment before.
+
+  **RetinaFace for v7 (2026-11-27).** Hailo's Model Zoo ships `retinaface_mobilenet_v1` as a 736×1280 TFLite file and
+  a compiled HEF (38 ms per call on our UGen300), but an upright crib crop is at most 640 px on its long side, so most
+  of that input is padding. The Dataflow Compiler no longer accepts a new input size for TFLite models, so
+  `hailo/retina_port.py` copies the TFLite weights unchanged into PyTorch and exports a 640×480 ONNX file (its
+  736×1280 export matches the TFLite outputs to float precision). `hailo/compile_hef.py --model retina` compiles it
+  with Hailo's own model script for this network, calibrated on 64 crib crops from the training half
+  (`prep_calib.py --model retina`): 16.2 ms per call on the chip, and the same face / no face judgment as the TFLite
+  model on 97.3% of 300 training-half frames. v6 against v7, everything on the CPU and with RTMO-m, the mouth/nose
+  model F and RetinaFace on the chip:
+
+  | Test (not trained on) | CPU v6 | CPU v7 | UGen300 v6 | UGen300 v7 |
+  | --- | --- | --- | --- | --- |
+  | Doll videos (31 + 3 nursery-camera), crib mode: danger caught / safe with a false alert / blind spot alerted | 43/44, 14/51, 16/17 | 43/44, **6/51**, 16/17 | 43/44, 16/51, 16/17 | 43/44, **7/51**, 16/17 |
+  | Doll video from another postpartum nursery's own camera: danger caught / safe with a false alert | 4/4, 1/5 | 4/4, 0/5 | 4/4, 1/5 | 4/4, 0/5 |
+  | Doll photos, batch 1 (110 dolls, per doll): hidden alerted / visible with a false alert | 62/68, 4/39 | 61/68, 3/39 | 61/68, 4/39 | 61/68, 3/39 |
+  | SyRIP nursery-like supine, face visible: false alerts | 7 of 81 | 6 of 81 | 9 of 80 | 6 of 80 |
+  | SyRIP all postures, face visible: false alerts; hidden: alerted | 150 of 537, 72/72 | 125 of 537, 71/72 | 156 of 540, 74/74 | 130 of 540, 73/74 |
+
+  Photos have no crib, so for them v7 looks again inside each person's box (enlarged 1.25×, turned upright like a
+  crib crop). The UGen300 v6 photo and SyRIP numbers are the same runs read before the second look; on the CPU that
+  reading matches a separate v6 run row for row. The cost of v7: one more hidden face missed in each photo set (a
+  prone baby in SyRIP, on both; on the CPU a doll lying face-down on a cushion, face score 0.91). A hand over the
+  mouth and nose (SyRIP, 10 photos) is alerted on 4 with v6 and with v7. With RTMO-m on the chip one baby of the
+  nursery-like subset is not found, hence 80.
 - **On the UGen300** (HailoRT 5.4.0 on Windows over USB, setup in [`hailo/安裝筆記.md`](./hailo/安裝筆記.md)):
   `hailo/hailo_infer.py` wraps HailoRT's Python API, and with `FG_RTMO_HEF` set the pipeline runs RTMO-m's network on
   the chip and its post-processing on the host (`pipeline/infant_face_v3.py`, `load_rtmo`). The chip's outputs match
@@ -333,6 +368,32 @@ whether the face can be seen.
     - Not included: receiving RTSP over the network, and converting the judged frame to BGR.
     - Stability: batches of 4 with F and 25 cribs dropped off USB 5 times in a one-hour run (all recovered within
       2 s; see "USB disconnects and recovery" below), against none in 34 hours one frame at a time with 8 cribs.
+- **Speed of v7** (2026-11-28; same frames with one face each, 720p, i7-11800H on AC power, 20 s per measurement,
+  two runs, chip in a child process; RetinaFace runs only on frames v6 judged hidden). Frames per second for all
+  cribs together:
+
+  | Configuration | 1 crib | 4 | 8 | 16 |
+  | --- | --- | --- | --- | --- |
+  | Everything on the CPU | 1.5 | 4.8 | 7.1 | 8.2 (one run) |
+  | **RTMO-m, mouth/nose F and RetinaFace on the chip (demo)** | 7.8 / 8.4 | 14.1 / 14.3 | 14.1 / 14.6 | 14.5 / 14.6 |
+  | RTMO-m and RetinaFace on the chip, mouth/nose model on the CPU | 8.0 / 8.4 | 17.9 / 19.1 | 18.7 / 19.2 | 18.1 / 19.3 |
+
+  When RetinaFace has to run on every frame (the worst case, every crib judged hidden by v6), the demo configuration
+  gives 12.1 with 8 cribs. With 25 cribs, and the laptop also decoding 25 camera streams (1080p, 30 frames per
+  second) in hardware:
+
+  | Up to N frames per chip call | Mouth/nose F on the chip | Mouth/nose model on the CPU |
+  | --- | --- | --- |
+  | 1 (demo) | 14.1 / 14.5 | 17.9 / 18.1 |
+  | 2 | 18.5 / 19.0 | 16.2 / 19.1 |
+  | 4 | 21.8 / 17.1\* | 19.2 / 22.6 |
+
+  \*The chip process restarted once during that run. In these runs 2 of the 25 hardware decoders fell back and lagged
+  (on 2026-11-26 all 25 kept up), so the totals may be slightly low. No configuration reaches the 25 frames per
+  second that 25 cribs need at 1 frame per second each. On the doll videos, 0.72 frames per second per crib still
+  caught every danger that 5 caught, with alarms a median 1.0 s and at most 2.2 s later (`fps_sweep --rates`); these
+  are dolls, mostly lying still. Eight-hour runs with 25 cribs (batches of 4 and of 2) and with the demo
+  configuration were in progress when this was written.
 - **USB disconnects and recovery:** now and then the UGen300 drops off USB and comes back by itself
   (`HAILO_COMMUNICATION_CLOSED`; Windows logs each drop as Kernel-PnP event 1010 for `USB\VID_0B05&PID_1D6F`, and the
   log matches every disconnect our scripts saw). With YuNet on the chip it happens every few minutes with 8 cribs
@@ -366,7 +427,12 @@ whether the face can be seen.
   costs 13.5 s. The live view shows those gaps as a purple "offline" light (`crib_state.Liveness`, 2 s without a
   judgment). Tested on the chip with `demo.live_view --fault hang@86 kill@105`: the hung child turned the crib purple
   2 s after the last judgment and the light came back 11.8 s later; the killed child was back within 2 s, under the
-  offline threshold.
+  offline threshold. Until 2026-11-28 a frame caught in a disconnect could come back with outputs the chip never
+  wrote (zeros, or the previous frame's values in shared memory); the mouth/nose model reads zero logits as 0.50,
+  which counts as visible. `hailo/hailo_infer.py` now fills the outputs with NaN before each job, checks every
+  completion and raises when a job failed or left an output unwritten, so the frame is resent instead. Killing the
+  chip process 4 times in 5 minutes with 25 cribs (v7 with RetinaFace on every frame, batches of 4) then gave 0
+  judgments that differ from the known answers for the test frames; no crib went more than 5.4 s without one.
 - **VLM on the UGen300** (`hailo/vlm_hef.py`): Hailo's GenAI Model Zoo ships Qwen2-VL-2B-Instruct already compiled for
   the Hailo-10H (HEF for HailoRT 5.4.0, 3.26 GB), and pyHailoRT for Windows includes the VLM API. On the chip it loads in
   20 s and answers a yes/no question in 1.03 s (first token; 7 tokens/s after that), as in Hailo's published table.
@@ -402,26 +468,29 @@ whether the face can be seen.
 
 These are proxies: real infant photos taken at home, dolls, and simulations. There is no real nursery data yet.
 
-### Main pipeline (v6) on data it was not trained on
+### Main pipeline (v7) on data it was not trained on
 
-Doll videos use the 3-second rule at 5 frames per second, each labelled segment scored once. The threshold (0.5) was
-fixed before any of these runs.
+Doll videos use the 3-second rule at 5 frames per second, each labelled segment scored once. The thresholds (0.5 for
+the mouth/nose model, 0.7 for RetinaFace) were fixed before any of these runs. Everything on the CPU:
 
 Second version of the mouth/nose model (2026-11-26, see "Second version" above), held-out half after the 11/26 split:
 
-| Test | v3 + crib mode | v4 + crib mode | **v6 + crib mode** |
-| --- | --- | --- | --- |
-| Doll videos, held-out half (31 videos): danger segments caught / safe segments with a false alert | 34/34, 13/45 | 34/34, 15/45 | 34/34, 14/45 |
-| Same 31 videos: nose and mouth uncovered but turned away from the camera, alerted | 11/13 | 11/13 | **12/13** |
-| Doll videos recorded on a postpartum nursery's own per-crib camera (3 videos; that doll and camera were never trained on): caught / false alert | 3/10, 0/6 | 8/10, 0/6 | **9/10**, 0/6 |
-| Same 3 videos: nose and mouth uncovered but turned away from the camera (the centre wants a reminder), alerted | 1/4 | 1/4 | **4/4** |
-| Doll photos, batch 1 (per doll, no crib mode): hidden and alerted / visible with a false alert | 59/68, 2/39 | 62/68, 2/39 | 62/68, **4/39** |
-| Real infant photos (SyRIP), nursery-like subset (81 found): false alerts | 5 | 8 | 7 |
-| SyRIP, a hand over the mouth and nose (10): alerted | 1 | 1 | **4** |
-| SyRIP, nose and mouth hidden (72): alerted | 71 | 71 | 72 |
-| SyRIP, every posture, nose and mouth visible (537): false alerts | 6.0% | 10.4% | **27.9%** |
+| Test | v3 + crib mode | v4 + crib mode | v6 + crib mode | **v7 + crib mode** |
+| --- | --- | --- | --- | --- |
+| Doll videos, held-out half (31 videos): danger segments caught / safe segments with a false alert | 34/34, 13/45 | 34/34, 15/45 | 34/34, 14/45 | 34/34, **6/45** |
+| Same 31 videos: nose and mouth uncovered but turned away from the camera, alerted | 11/13 | 11/13 | 12/13 | 12/13 |
+| Doll videos recorded on a postpartum nursery's own per-crib camera (3 videos; that doll and camera were never trained on): caught / false alert | 3/10, 0/6 | 8/10, 0/6 | 9/10, 0/6 | 9/10, 0/6 |
+| Same 3 videos: nose and mouth uncovered but turned away from the camera (the centre wants a reminder), alerted | 1/4 | 1/4 | 4/4 | 4/4 |
+| Doll photos, batch 1 (per doll, no crib mode): hidden and alerted / visible with a false alert | 59/68, 2/39 | 62/68, 2/39 | 62/68, 4/39 | 61/68, 3/39 |
+| Real infant photos (SyRIP), nursery-like subset (81 found): false alerts | 5 | 8 | 7 | 6 |
+| SyRIP, a hand over the mouth and nose (10): alerted | 1 | 1 | 4 | 4 |
+| SyRIP, nose and mouth hidden (72): alerted | 71 | 71 | 72 | 71 |
+| SyRIP, every posture, nose and mouth visible (537): false alerts | 6.0% | 10.4% | 27.9% | 23.3% |
 
-The first version on the same held-out data: 34/34 and 13/45, 11/13; nursery camera 9/10, 0/6, 3/4; SyRIP 9 of 81.
+The first version of the mouth/nose model with v6 on the same held-out data: 34/34 and 13/45, 11/13; nursery camera
+9/10, 0/6, 3/4; SyRIP 9 of 81. We adopted v7 on 2026-11-27 for its fewer false alerts on the doll videos with no
+caught danger or blind spot lost; the photo and SyRIP numbers for v7 were measured on 2026-11-28, and on the chip it
+behaves the same (see "RetinaFace for v7" above).
 
 - On the nursery camera v6 adds a swaddle beside the face that covers the mouth (23% of frames judged hidden with v4,
   94% with v6) and two side-lying, slightly face-down segments. Its one miss is a prone segment (96% of frames hidden,
@@ -462,9 +531,14 @@ Install [uv](https://docs.astral.sh/uv/), then from the repository root:
 
 ```bash
 uv sync
-uv run python -m pipeline.infant_face_v6 your_photo.jpg   # main pipeline; needs model/mouth_patch_ens3.onnx
+uv run python -m pipeline.infant_face_v6 your_photo.jpg   # v6: pose, faces, mouth/nose model; needs model/mouth_patch_ens3.onnx
+uv run python -m pipeline.infant_face_v7 your_photo.jpg   # v7's second look: the whole image as one crib, RetinaFace's faces and their mouth/nose scores
 uv run python -m pipeline.infant_face_v3 your_photo.jpg   # without the mouth/nose model (works out of the box)
 ```
+
+v7 also needs `model/retinaface_v1_640x480.onnx` (14 MB, not in the repository; `FG_RETINA_ONNX` for another path),
+which `hailo/retina_port.py` builds from the TFLite file in Hailo's Model Zoo (download link in its header). Without
+it, `eval_video` compares up to v6, and `demo.live_view` / `demo.live_wall` need `--mode v6_slot`.
 
 `uv sync` installs about 200 MB and no PyTorch. The first run downloads RTMO-m (about 80 MB). The result is saved to
 `outputs/your_photo_v6.jpg` (or `_v3.jpg`): red box = nose and mouth not visible (alert), green = visible, yellow =
@@ -484,16 +558,18 @@ SyRIP from its authors. Results are written to `outputs/`.
 
 ```bash
 uv run python -m evaluation.eval_video               # doll videos: per-crib judgement + 3-second alerts (no names = every labelled video, incl. the 11/08 batch);
-                                                     # adds v6 when the patch model is present and prints v6's score on the videos it was not trained on last
+                                                     # adds v6 (and v7) when the patch model (and RetinaFace) is present; prints the score on the videos they were not trained on last
 uv run python -m evaluation.eval_video --reuse --on 2  # recompute with another alert rule, no new detection
 uv run python -m evaluation.crib_context             # caregiving pause + empty crib (run eval_video first)
-uv run python -m evaluation.fps_sweep                # v6 at fewer frames per second per crib, from the stored 5 fps decisions (run eval_video first)
+uv run python -m evaluation.fps_sweep                # the main pipeline at fewer frames per second per crib, from the stored 5 fps decisions (run eval_video first)
+uv run python -m evaluation.fps_sweep --rates 0.96 0.72 --gap 3.6   # fractional rates (e.g. 25 cribs sharing 24 frames per second), plus a 3.6 s outage at the start of every danger
 uv run python -m evaluation.eval_doll --det-th 0.15 --batch 1,2,3   # doll photos, scored per doll (the 185-doll results above)
 uv run python -m evaluation.eval_doll --det-th 0.15 --batch 4       # the 11/08 batch (one care-training doll), reported separately
 uv run python -m evaluation.eval_doll --face v6 --det-th 0.15 --batch 1   # v6: batches 2-4 are its training data, so only batch 1 counts
-uv run python -m evaluation.eval_syrip --face v6 --models rtmo   # real infant photos (dataset/SyRIP_Posture.zip); also --face v3, v4
+uv run python -m evaluation.eval_doll --face v7 --det-th 0.15 --batch 1   # v7 (v6, then RetinaFace inside each doll judged hidden)
+uv run python -m evaluation.eval_syrip --face v7 --models rtmo   # real infant photos (dataset/SyRIP_Posture.zip); also --face v3, v4, v6
 uv run python -m evaluation.score_relabel            # SyRIP false alerts with the manual relabels (all 700 images)
-uv run python -m evaluation.syrip_nursery v3 v4 v6   # SyRIP nursery-like subset (the subset lists, like the relabels, are not in the repository)
+uv run python -m evaluation.syrip_nursery v3 v4 v6 v7   # SyRIP nursery-like subset (the subset lists, like the relabels, are not in the repository)
 uv run python -m evaluation.bench_multistream        # CPU throughput: how many cribs one host handles (--modes full v6 for the patch model's cost)
 ```
 
@@ -515,13 +591,26 @@ uv run python -m evaluation.eval_video IMG_8735 --cctv daycare --fps 1    # resu
 ### Demo
 
 ```bash
-uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed (v6; --mode v3_slot without the patch model)
+uv run python -m demo.live_view IMG_8432 --start 80   # live judgement on a laptop, at the video's own speed (v7; --mode v6_slot or v3_slot without those models)
 uv run python -m demo.live_view IMG_8432 --start 80 --fault error@90   # test the offline light: 5 s of failed judgments
-uv run python -m demo.live_view IMG_8432 --start 80 --chip   # demo configuration: RTMO-m and the mouth/nose model on the UGen300 (needs the HEFs and pyHailoRT, see below)
+uv run python -m demo.live_view IMG_8432 --start 80 --chip   # demo configuration: RTMO-m, the mouth/nose model and RetinaFace on the UGen300 (needs the HEFs and pyHailoRT, see below)
+uv run python -m demo.live_wall --chip                # finals demo: 8 pre-recorded per-crib doll videos judged live at once (demo/wall_playlist.json)
+FG_NTFY_TOPIC=<topic> uv run python -m demo.live_wall --chip --fullscreen   # the same, with red alerts pushed to a phone
+uv run python -m demo.live_wall --chip --no-window --no-push --duration 36000   # overnight run, per-crib rates logged every minute
+FG_NTFY_TOPIC=<topic> uv run python -m demo.ntfy_push --repeat 3   # time three test pushes to the phone
 uv run python -m demo.demo_render IMG_8432 --start 80 --end 112   # single crib: camera + light + reasons
 uv run python -m demo.demo_render --grid              # nurse-station mock-up (8 cribs)
 uv run python -m demo.export_assets                   # export real lights for the clickable UI
 ```
+
+`demo.live_wall` plays each crib's video at real speed in its own thread and judges every crib's latest frame
+(`crib_detect.detect` and the state machines, the same code as the evaluations; nothing is pre-computed). The
+videos are not in the repository. On a red light it pushes a text-only message ("FirstGlance · Crib 03 · Nose and
+mouth hidden for 3 s. Check now.") through [ntfy](https://ntfy.sh) to the phones subscribed to a topic, once per red
+light and never with an image (`demo/ntfy_push.py`). The topic is read only from `FG_NTFY_TOPIC` and must not be
+committed: anyone who knows it can read and post. Offline (purple) cribs are not pushed (`--push-offline` changes
+that). On an iPhone, test pushes arrived within about 2.4 s of sending, including the time to press a key when the
+phone buzzed (2026-11-28).
 
 The clickable nurse-station prototype is `demo/ui/index.html`: open it in a browser, no server needed. Without exported
 data it uses the synthetic sample in `demo/ui/sample/`. The ⚡ button simulates a chip fault (the recorded lights contain
@@ -549,6 +638,10 @@ python "/mnt/c/<repo>/hailo/compare_mouth.py" --har mouth/mouth_A_quantized.har 
 python "/mnt/c/<repo>/hailo/compile_hef.py" --model mouth --name mouth_F --calib mouth_calib.npy \
     --extra "quantization_param([$(echo conv{1..60} fc{1..3} | sed 's/ /, /g')], precision_mode=a16_w16)"
 python "/mnt/c/<repo>/hailo/compare_mouth.py" --har mouth/mouth_F_quantized.har --data mouth_hold.npy
+# RetinaFace (v7): port Hailo's TFLite file to a 640×480 ONNX, then calibrate on crib crops and compile with Hailo's model script
+.venv-vlm/Scripts/python -m hailo.retina_port            # needs PyTorch, onnx and tflite; --check compares against the TFLite file
+uv run python -m hailo.prep_calib --model retina
+python "/mnt/c/<repo>/hailo/compile_hef.py" --model retina --name retinaface_v1_640x480 --calib retina_calib.npy   # in WSL
 ```
 
 ### Running on the UGen300 (HailoRT)
@@ -579,9 +672,12 @@ FG_RTMO_HEF=model/rtmo_D1.hef uv run python -m evaluation.bench_multistream --th
 
 In PowerShell set the variables first, e.g. `$env:FG_RTMO_HEF = "model/rtmo_D1.hef"; $env:FG_YUNET_HEF = "model/yunet_A.hef"`.
 Every evaluation and demo script accepts them, and `FG_MOUTH_HEF` (e.g. `model/mouth_F.hef`) moves v6's mouth/nose
-patch model to the chip the same way (`hailo/mouth_hef.py`). `demo.live_view --chip` sets the demo configuration in
-one go (`CHIP_FINALS` in `demo/live_view.py`): `FG_CHIP_PROCESS=1`, `FG_RTMO_HEF=model/rtmo_D1.hef` and
-`FG_MOUTH_HEF=model/mouth_F.hef`, with YuNet on the CPU. Playing a 904-second recording from a postpartum nursery's
+patch model to the chip the same way (`hailo/mouth_hef.py`), and `FG_RETINA_HEF` (e.g.
+`model/retinaface_v1_640x480.hef`) v7's RetinaFace (`hailo/retina_hef.py`). `demo.live_view --chip` and
+`demo.live_wall --chip` set the demo configuration in one go (`CHIP_FINALS` in `demo/live_view.py`):
+`FG_CHIP_PROCESS=1`, `FG_RTMO_HEF=model/rtmo_D1.hef`, `FG_MOUTH_HEF=model/mouth_F.hef` and, since 2026-11-27,
+`FG_RETINA_HEF=model/retinaface_v1_640x480.hef`, with YuNet on the CPU. The 904-second recording below was played
+before RetinaFace was added (v6). Playing a 904-second recording from a postpartum nursery's
 own per-crib camera (dolls only) this way, it judged 4,518 of the 4,520 frames, 5.0 per second, with no offline
 light, error or disconnect (2026-11-26); the on-screen time per frame, a 1-second average, stayed between 101 and
 146 ms. `bench_multistream --threads` runs the cribs as threads of one
@@ -637,23 +733,25 @@ the whole head crop (`experiments/airway_crops.py`, `airway_train.py`) was not a
 
 ```
 pipeline/       the per-crib pipeline (the part that runs on the edge box)
-  infant_face_v6.py   main pipeline: v3 + mouth/nose patch model (nose-to-chin crop of each face; ONNX Runtime, or the UGen300 with FG_MOUTH_HEF)
-  infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (v6 builds on it)
+  infant_face_v7.py   main pipeline: v6 + RetinaFace looking again where v6 sees no uncovered face (ONNX Runtime, or the UGen300 with FG_RETINA_HEF)
+  infant_face_v6.py   v3 + mouth/nose patch model (nose-to-chin crop of each face; ONNX Runtime, or the UGen300 with FG_MOUTH_HEF)
+  infant_face_v3.py   pose → heads rotated upright → faces: is each baby's face visible (v6 and v7 build on it)
   infant_face_v4.py   for comparison: v3 + mouth-skin check
   infant_face_v5.py   for comparison: v4 + three face levels (ok / warn / alert)
   face_common.py      thresholds, YuNet face search, matching faces to people, drawing
-  crib_detect.py      one frame: are the nose and mouth visible in each crib (crib mode; MAIN_MODE = v6_slot)
+  crib_detect.py      one frame: are the nose and mouth visible in each crib (crib mode; MAIN_MODE = v7_slot)
   crib_state.py       per-crib state machine: 3-second alert, caregiving pause, empty crib, offline
 evaluation/     evaluation scripts and their helpers (label loading, simulated night view, simulated CCTV footage)
-demo/           demo renderer, live laptop view, clickable nurse-station UI (ui/)
+demo/           demo renderer, live laptop view, 8-crib live wall with phone push (live_wall.py, ntfy_push.py),
+                clickable nurse-station UI (ui/)
 experiments/    earlier versions (v1, v2) and exploratory spikes kept for comparison, including the VLM second check
                 (vlm_spike.py), the training scripts of the mouth/nose patch model (mouth_patch_*.py) and the
                 earlier head-crop classifier (airway_crops.py, airway_train.py)
 hailo/          HEF conversion (calibration, compile, quantization-aware training, emulator and on-chip comparison,
-                host-side decoders, HailoRT runner with drop-ins for YuNet and the mouth/nose patch model, VLM runner,
-                USB stress test), plan and results
+                host-side decoders, HailoRT runner with drop-ins for YuNet, the mouth/nose patch model and RetinaFace,
+                RetinaFace TFLite-to-ONNX port, VLM runner, USB stress test), plan and results
 labels/         our annotations: doll photos, crib areas and timelines for the doll videos, one training-only sequence
-model/          YuNet face detector (MIT); RTMO-m downloads on first run; the mouth/nose patch model and HEF files are not included
+model/          YuNet face detector (MIT); RTMO-m downloads on first run; the mouth/nose patch model, RetinaFace and HEF files are not included
 docs/           technical write-up and test reports (Chinese)
 ```
 
@@ -672,19 +770,20 @@ docs/           technical write-up and test reports (Chinese)
   side faces of dolls it has not seen are gaps in its training data; on the nursery-like real infant photos it raises
   one more false alert than the skin check (v4), and on older infants who sit, crawl or stand it raises many more.
   Real newborns need an ethics-approved pilot (IRB) first.
-- The patch model only judges faces the detector finds. When YuNet misses a side face, the crib still counts as not
-  visible (false alert), and v6 cannot undo that.
-- The demo configuration runs the patch model's 16-bit build on the Hailo-10H. It gives the CPU's counts on our doll
-  data and one more false alert on SyRIP (10 instead of 9 of the 81 nursery-like photos). It ran 8 hours with 8
-  cribs without a USB disconnect (as did the 8-bit build), but that is one night on one laptop, not a guarantee. In the demo configuration the chip is the bottleneck (16.2 frames per second for all cribs
-  together on our laptop), which is about 3 cribs at the 5 frames per second we evaluate at.
+- The patch model only judges faces a detector finds. When YuNet misses a side face, v7 asks RetinaFace; when both
+  miss it, the crib still counts as not visible (false alert). RetinaFace is not fine-tuned on infants or dolls, and
+  on the photos it found a "face" on one prone baby and one face-down doll whose mouth was hidden.
+- The demo configuration runs the patch model's 16-bit build and RetinaFace on the Hailo-10H. With v6 it ran 8 hours
+  with 8 cribs without a USB disconnect (as did the 8-bit build), but that is one night on one laptop, not a
+  guarantee. In the demo configuration the chip is the bottleneck (14.3 frames per second for 8 cribs together with
+  v7 on our laptop), which is about 3 cribs at the 5 frames per second we evaluate at, or 14 at 1 frame per second.
 - A baby lying prone with the head turned sideways keeps the mouth visible, so the light stays green.
 - Night (IR) footage is only simulated, and grayscale raises false alerts.
 - The UGen300 drops off USB now and then (every few minutes with YuNet on the chip under load; a few times a night
   when several cribs' frames are on the chip at once, and 5 times in one hour with batches of 4, F and 25 cribs; none
   in 34 hours one frame at a time), and we do not know why. With the chip in a child process (`FG_CHIP_PROCESS=1`) the pipeline
   recovers by itself in 1–2 s, and gaps over 2 s show as a purple "offline" light. The live view shows that light on
-  real judgments; the nurse-station prototype shows it only for a simulated fault. Whether it should also reach the
-  nurse's phone is not decided yet.
+  real judgments; the nurse-station prototype shows it only for a simulated fault. It is not pushed to the nurse's
+  phone; only red alerts are.
 - Spit-up is not detected; it is a Stage II research item.
 - Getting the per-crib streams depends on the livestream vendors; that is part of Stage II.

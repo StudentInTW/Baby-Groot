@@ -11,7 +11,7 @@ live_wall.py
   燈號規則跟 live_view.py 一樣（demo_render.display_state）：綠、黃（倒數中）、紅、藍（照護中）、灰（空床）、紫（離線）。
 - 紅燈推播（demo/ntfy_push.py）：某床變紅燈時推播到手機（標題「FirstGlance · Crib 03」、內容「Nose and mouth hidden for 3 s.
   Check now.」），只有文字、不送畫面；同一床一次紅燈只推一次（解除後再紅才再推）。topic 放環境變數 FG_NTFY_TOPIC，沒設就不推。
-  背景送、逾時短，送不出去只記在事件列表，判讀照常。離線（紫燈）要不要推播還沒定：--push-offline 才推，預設不推。
+  背景送、逾時短，送不出去只記在事件列表，判讀照常。離線（紫燈）不推播（Harry 11/28 定）：--push-offline 才推，預設不推。
 - 不是事先算好的：不讀 outputs/ 的任何東西。空床參考照（床位檔的 empty_ref）開始前先讀一張，等於安裝時拍的空床照。
 - 播放清單（--playlist，預設 demo/wall_playlist.json）：每床一串片段 {video, start, end}，可以接不同支影片
   （例如 11/23 那批一支只有一個姿勢）。片段之間的剪接點不拿前後兩幀比「床邊有沒有動」（不是真的有人來），
@@ -27,7 +27,9 @@ live_wall.py
     uv run python -m demo.live_wall --chip --fault hang@60 kill@120 error@180:03          # 測紫燈：晶片卡住、當掉、03 床判讀出錯 5 秒
 按鍵：q／Esc 結束、空白鍵暫停、r 從頭重播（燈號、事件、推播紀錄都重來；自動播完一輪時事件列表不清）、f 全螢幕切換、
       o 現場示範紫燈（--chip 時暫停晶片子程序＝晶片卡住，約 13.5 秒後自己恢復；CPU 時所有床判讀出錯 5 秒）。
-紀錄：每分鐘印一行、存一次 outputs/demo_wall/wall_<開始時間>.json（每床判讀次數、每秒幾幀、最長多久沒判讀、離線次數、推播）。
+紀錄：每分鐘印一行、存一次 outputs/demo_wall/wall_<開始時間>.json（每床判讀次數、每秒幾幀、最長多久沒判讀、離線次數、推播）；
+      同名的 _minutes.csv 每分鐘一列（這一分鐘每床判讀幾次、最長多久沒判讀、離線和晶片重開累計、畫面幀數、CPU %），
+      _events.jsonl 每個事件一行（紅、藍、灰、離線、恢復，含日期時間）。
 """
 
 import argparse
@@ -340,6 +342,7 @@ class Analyzer(threading.Thread):
         self.stopped = False
         self.count = self.errors = self.resumes = self.alerts = self.lapses = 0
         self.max_gap, self.last_done, self.offline_s = 0.0, None, 0.0
+        self.max_gap_min = 0.0   # 這一分鐘裡最長多久沒判讀（每分鐘的紀錄讀完歸零）
         self.ms_hist = deque(maxlen=10)
         self.done = deque(maxlen=12)   # 最近幾次判讀完成的時間（展演時鐘），算這床每秒判讀幾幀
         self.offline, self.offline_since = False, None
@@ -420,6 +423,7 @@ class Analyzer(threading.Thread):
                 t = self.wall.clock.now()
                 if self.last_done is not None:
                     self.max_gap = max(self.max_gap, t - self.last_done)
+                    self.max_gap_min = max(self.max_gap_min, t - self.last_done)
                 self.last_done = t
                 self.done.append(t)
                 self.count += 1
@@ -507,6 +511,7 @@ class Wall:
         self.error_until = {}   # 床號或 "*" → 展演時鐘幾秒前判讀都出錯
         self.pending_off, self.pending_off_at = [], None
         self.frames = 0
+        self.event_log = None   # main() 設：每個事件另外附加一行到這個 .jsonl（長時間測試事後查哪一分鐘斷線）
 
     # 事件、推播
     def add_event(self, kind, crib, text, push=None):
@@ -514,6 +519,11 @@ class Wall:
         with self.lock:
             self.events.appendleft(ev)
             self.version += 1
+            if self.event_log is not None:
+                with open(self.event_log, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"time": datetime.datetime.now().isoformat(timespec="milliseconds"),
+                                         "show_s": round(self.clock.now(), 2), "kind": kind, "crib": crib,
+                                         "text": text}, ensure_ascii=False) + "\n")
         print(f"[{ev['t']}] " + (f"Crib {crib} · " if crib else "") + f"{kind}：{text}", flush=True)
         return ev
 
@@ -547,8 +557,11 @@ class Wall:
             if off:
                 an.lapses += 1
                 an.offline_since = self.clock.now()
-                why = f" ({ascii_only(an.live.error)[:50]})" if an.live.error else ""
-                self.add_event("offline", an.crib, EVENT_TEXT["offline"] + why)
+                if an.live.error:   # 判讀出錯是馬上離線，不是等 2 秒
+                    text = f"analysis failing: check in person ({ascii_only(an.live.error)[:50]})"
+                else:
+                    text = EVENT_TEXT["offline"]
+                self.add_event("offline", an.crib, text)
                 if self.args.push_offline and self.notifier is not None and self.notifier.enabled:
                     self.pending_off.append(an.crib)
                     self.pending_off_at = self.pending_off_at or time.monotonic()
@@ -797,10 +810,43 @@ class Wall:
             "cribs": [{"crib": an.crib, "clips": [f"{s.video} {s.start:g}-{s.end:g}" for s in feed.segs],
                        "analyses": an.count, "per_s": round(an.count / self.clock.now(), 2) if self.clock.now() else None,
                        "ms_recent": round(float(np.mean(an.ms_hist)), 0) if an.ms_hist else None,
-                       "max_gap_s": round(an.max_gap, 2), "offline_lapses": an.lapses, "offline_s": round(an.offline_s, 1),
+                       "max_gap_s": round(an.max_gap, 2), "offline_lapses": an.lapses,
+                       "offline_s": round(an.offline_s + (self.clock.now() - an.offline_since if an.offline else 0), 1),
                        "errors": an.errors, "resumes": an.resumes, "red_alerts": an.alerts,
                        "decoded": feed.decoded, "skipped": feed.skipped} for feed, an in self.cribs],
         }
+
+
+class MinuteLog:
+    """每分鐘一列的時間序列（長時間測試用，跟主 session 的 soak 測速對照）：這一分鐘每床判讀幾次、每床最長多久沒判讀、
+    到目前為止的離線次數、晶片重開次數、這一分鐘畫面重畫幾幀、CPU 使用率。"""
+
+    def __init__(self, path, wall):
+        import psutil
+        self.path, self.wall, self.psutil = path, wall, psutil
+        self.prev_counts, self.prev_frames = None, 0
+        psutil.cpu_percent(None)   # 第一次呼叫只是起算點
+        cribs = [an.crib for _, an in wall.cribs]
+        with open(path, "w", encoding="utf-8-sig", newline="") as fh:
+            fh.write(",".join(["time", "show_min"] + [f"n_{c}" for c in cribs] + [f"gap_{c}" for c in cribs]
+                              + ["offline_lapses", "chip_restarts", "display_frames", "cpu_pct"]) + "\n")
+
+    def write(self):
+        import hailo.chip_process as cp
+        w = self.wall
+        counts = [an.count for _, an in w.cribs]
+        prev = self.prev_counts or [0] * len(counts)
+        gaps = []
+        for _, an in w.cribs:
+            gaps.append(round(an.max_gap_min, 2))
+            an.max_gap_min = 0.0
+        row = ([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{w.clock.now() / 60:.1f}"]
+               + [str(c - p) for c, p in zip(counts, prev)] + [str(g) for g in gaps]
+               + [str(sum(an.lapses for _, an in w.cribs)), str(cp.restarts), str(w.frames - self.prev_frames),
+                  f"{self.psutil.cpu_percent(None):.0f}"])
+        self.prev_counts, self.prev_frames = counts, w.frames
+        with open(self.path, "a", encoding="utf-8", newline="") as fh:
+            fh.write(",".join(row) + "\n")
 
 
 def parse_faults(specs):
@@ -834,6 +880,7 @@ def main():
     ap.add_argument("--snapshot", help="結束時把最後一個畫面存成圖（.png；檢查版面用）")
     ap.add_argument("--once", action="store_true", help="只播一輪（預設播完全部從頭再播）")
     ap.add_argument("--duration", type=float, help="跑幾秒就結束（預設不限）")
+    ap.add_argument("--log-every", type=float, default=60, help="每幾秒印一行、存一次紀錄（預設 60）")
     ap.add_argument("--no-push", action="store_true", help="不推播（就算設了 FG_NTFY_TOPIC）")
     ap.add_argument("--push-offline", action="store_true", help="離線（紫燈）也推播（預設不推；同時離線的床合成一則）")
     ap.add_argument("--fault", nargs="*", metavar="種類@秒[:床號]",
@@ -896,6 +943,8 @@ def main():
     started = datetime.datetime.now()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"wall_{started:%Y%m%d_%H%M%S}.json"
+    wall.event_log = log_path.with_name(log_path.stem + "_events.jsonl")
+    minutes = MinuteLog(log_path.with_name(log_path.stem + "_minutes.csv"), wall)
     wall.clock = ShowClock()   # 暖機、開視窗的時間不算
     for feed, an in wall.cribs:
         feed.clock = wall.clock
@@ -904,7 +953,7 @@ def main():
         feed.start()
         an.start()
     print("開始（q／Esc 結束、空白鍵暫停、r 從頭重播、f 全螢幕、o 示範紫燈）")
-    wall0, next_log, frame_dt = time.monotonic(), 60.0, 1 / DISPLAY_FPS
+    wall0, next_log, frame_dt = time.monotonic(), args.log_every, 1 / DISPLAY_FPS
     next_frame, canvas = time.monotonic(), None
     try:
         while True:
@@ -948,9 +997,10 @@ def main():
                 full = not full
                 cv2.setWindowProperty(TITLE, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN if full else cv2.WINDOW_NORMAL)
             if wall.clock.now() >= next_log:   # 每分鐘一行＋存一次紀錄（長時間測試中途當掉也有資料）
-                next_log += 60
+                next_log += args.log_every
                 s = wall.summary(f"{started:%Y-%m-%d %H:%M:%S}", time.monotonic() - wall0)
                 log_path.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
+                minutes.write()
                 per = " ".join(f"{c['crib']}:{c['per_s']}" for c in s["cribs"])
                 print(f"[{now_str()}] 第 {wall.clock.now() / 60:.0f} 分：每床每秒判讀 {per}；最長沒判讀 "
                       f"{max(c['max_gap_s'] for c in s['cribs']):.1f} 秒；離線 {sum(c['offline_lapses'] for c in s['cribs'])} 次；"
