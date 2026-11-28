@@ -23,7 +23,8 @@ live_wall.py
     uv run python -m demo.live_wall --clip bed308_v4_122418:50:100    # 不用播放清單，直接指定片段（影片:開始:結束，可給好幾個）
     uv run python -m demo.live_wall --chip                            # 決賽展演的設定（live_view.CHIP_FINALS：RTMO、口鼻、RetinaFace 在 UGen300）
     $env:FG_NTFY_TOPIC="<topic>"; uv run python -m demo.live_wall --chip --fullscreen    # 展演：紅燈推播到手機
-    uv run python -m demo.live_wall --chip --no-window --no-push --duration 36000         # 整晚長時間測試（不開視窗、不推播、10 小時）
+    uv run python -m demo.live_wall --chip --no-window --no-push --duration 600           # 不開視窗的測試（不推播、10 分鐘；
+                                                                                          # 展演最多播 3 分鐘，11/28 取消了整夜測試）
     uv run python -m demo.live_wall --chip --fault hang@60 kill@120 error@180:03          # 測紫燈：晶片卡住、當掉、03 床判讀出錯 5 秒
 按鍵：q／Esc 結束、空白鍵暫停、r 從頭重播（燈號、事件、推播紀錄都重來；自動播完一輪時事件列表不清）、f 全螢幕切換、
       o 現場示範紫燈（--chip 時暫停晶片子程序＝晶片卡住，主程序等不到回應就砍掉重開、自己恢復；CPU 時所有床判讀出錯 5 秒）。
