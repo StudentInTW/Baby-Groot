@@ -26,9 +26,13 @@ live_wall.py
     uv run python -m demo.live_wall --chip --no-window --no-push --duration 36000         # 整晚長時間測試（不開視窗、不推播、10 小時）
     uv run python -m demo.live_wall --chip --fault hang@60 kill@120 error@180:03          # 測紫燈：晶片卡住、當掉、03 床判讀出錯 5 秒
 按鍵：q／Esc 結束、空白鍵暫停、r 從頭重播（燈號、事件、推播紀錄都重來；自動播完一輪時事件列表不清）、f 全螢幕切換、
-      o 現場示範紫燈（--chip 時暫停晶片子程序＝晶片卡住，約 13.5 秒後自己恢復；CPU 時所有床判讀出錯 5 秒）。
+      o 現場示範紫燈（--chip 時暫停晶片子程序＝晶片卡住，主程序等不到回應就砍掉重開、自己恢復；CPU 時所有床判讀出錯 5 秒）。
+      恢復要多久看 hailo/chip_process 的等候上限：11/28 晚起主程序最多等 2 秒（CALL_TIMEOUT_S）再重開；剛好有一床一次送好幾張
+      口鼻小塊（走管線）時多等每張 PIPE_PER_IMAGE_S（0.5 秒，3 張＝3.5 秒）。預估全部約 4–5 秒、紫燈約 2–3 秒
+      （2 秒沒判讀才紫，晶片上還沒量）；舊版等 12 秒，全部約 13.5 秒。
 紀錄：每分鐘印一行、存一次 outputs/demo_wall/wall_<開始時間>.json（每床判讀次數、每秒幾幀、最長多久沒判讀、離線次數、推播）；
-      同名的 _minutes.csv 每分鐘一列（這一分鐘每床判讀幾次、最長多久沒判讀、離線和晶片重開累計、畫面幀數、CPU %），
+      同名的 _minutes.csv 每分鐘一列（這一分鐘每床判讀幾次、最長多久沒判讀、離線和晶片重開累計、畫面幀數、CPU %、
+      這一分鐘最慢一次晶片呼叫 call_max_ms：chip_process.call_max_s，新版才有，跟主 session 的 soak_chip 同一個數），
       _events.jsonl 每個事件一行（紅、藍、灰、離線、恢復，含日期時間）。
 """
 
@@ -511,6 +515,7 @@ class Wall:
         self.error_until = {}   # 床號或 "*" → 展演時鐘幾秒前判讀都出錯
         self.pending_off, self.pending_off_at = [], None
         self.frames = 0
+        self.call_max_s = 0.0   # 全程最慢一次晶片呼叫（MinuteLog 每分鐘把 chip_process.call_max_s 收進來再歸零）
         self.event_log = None   # main() 設：每個事件另外附加一行到這個 .jsonl（長時間測試事後查哪一分鐘斷線）
 
     # 事件、推播
@@ -614,7 +619,8 @@ class Wall:
         print(f"[{now_str()}] 從頭播（{reason}）", flush=True)
 
     def simulate_offline(self):
-        """o 鍵：現場示範紫燈。晶片在子程序時把它暫停（等於晶片卡住：所有床約 13.5 秒沒判讀，主程序逾時後砍掉重開）；
+        """o 鍵：現場示範紫燈。晶片在子程序時把它暫停（等於晶片卡住：主程序等 chip_process.CALL_TIMEOUT_S 沒回應就砍掉重開，
+        新版 2 秒、一次好幾張口鼻小塊時每張多 0.5 秒，舊版 12 秒；所有床沒判讀的時間是這個加上重開）；
         沒有晶片子程序時改成所有床判讀出錯 ERROR_S 秒。"""
         import hailo.chip_process as cp
         if cp._proc is not None:
@@ -804,6 +810,8 @@ class Wall:
             "device": self.args.device, "mode": self.args.mode, "fps_target": self.args.fps,
             "display_fps": round(self.frames / wall_s, 1) if wall_s else None,
             "chip_restarts": cp.restarts,
+            "chip_call_timeout_s": cp.CALL_TIMEOUT_S if os.environ.get("FG_CHIP_PROCESS") == "1" else None,
+            "chip_call_max_ms": round(max(self.call_max_s, getattr(cp, "call_max_s", 0.0)) * 1000) or None,
             "push": {"enabled": bool(n and n.enabled), "sent": n.sent if n else 0, "failed": n.failed if n else 0,
                      "dropped": n.dropped if n else 0,
                      "median_s": round(float(np.median(n.latencies)), 2) if n and n.latencies else None},
@@ -819,7 +827,8 @@ class Wall:
 
 class MinuteLog:
     """每分鐘一列的時間序列（長時間測試用，跟主 session 的 soak 測速對照）：這一分鐘每床判讀幾次、每床最長多久沒判讀、
-    到目前為止的離線次數、晶片重開次數、這一分鐘畫面重畫幾幀、CPU 使用率。"""
+    到目前為止的離線次數、晶片重開次數、這一分鐘畫面重畫幾幀、CPU 使用率、這一分鐘最慢一次晶片呼叫（ms；
+    chip_process.call_max_s 讀完歸零，跟 soak_chip 一樣；舊版 chip_process 沒有這個數、CPU 跑時沒有呼叫，都留空）。"""
 
     def __init__(self, path, wall):
         import psutil
@@ -829,7 +838,7 @@ class MinuteLog:
         cribs = [an.crib for _, an in wall.cribs]
         with open(path, "w", encoding="utf-8-sig", newline="") as fh:
             fh.write(",".join(["time", "show_min"] + [f"n_{c}" for c in cribs] + [f"gap_{c}" for c in cribs]
-                              + ["offline_lapses", "chip_restarts", "display_frames", "cpu_pct"]) + "\n")
+                              + ["offline_lapses", "chip_restarts", "display_frames", "cpu_pct", "call_max_ms"]) + "\n")
 
     def write(self):
         import hailo.chip_process as cp
@@ -840,10 +849,14 @@ class MinuteLog:
         for _, an in w.cribs:
             gaps.append(round(an.max_gap_min, 2))
             an.max_gap_min = 0.0
+        call_max = getattr(cp, "call_max_s", None)   # 不拿 cp._LOCK：晶片卡住時會連畫面一起卡（少算一次的機會很小）
+        if call_max is not None:
+            w.call_max_s = max(w.call_max_s, call_max)
+            cp.call_max_s = 0.0
         row = ([datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{w.clock.now() / 60:.1f}"]
                + [str(c - p) for c, p in zip(counts, prev)] + [str(g) for g in gaps]
                + [str(sum(an.lapses for _, an in w.cribs)), str(cp.restarts), str(w.frames - self.prev_frames),
-                  f"{self.psutil.cpu_percent(None):.0f}"])
+                  f"{self.psutil.cpu_percent(None):.0f}", f"{call_max * 1000:.0f}" if call_max else ""])
         self.prev_counts, self.prev_frames = counts, w.frames
         with open(self.path, "a", encoding="utf-8", newline="") as fh:
             fh.write(",".join(row) + "\n")
@@ -912,6 +925,12 @@ def main():
     run_pose = infant_face_v3.load_rtmo()
     mouth = infant_face_v6.load_mouth_model(required=True) if args.mode in ("v6_slot", "v7_slot") else None
     retina = infant_face_v7.load_retina(required=True) if args.mode == "v7_slot" else None
+    if os.environ.get("FG_CHIP_PROCESS") == "1":   # 等候上限 11/28 晚縮短（主 session），印出來免得對照時搞混新舊版
+        import hailo.chip_process as cp
+        pipe = getattr(cp, "PIPE_PER_IMAGE_S", None)
+        print(f"晶片子程序：主程序等一次呼叫最多 {cp.CALL_TIMEOUT_S:g} 秒"
+              + (f"（一次好幾張時每張多 {pipe:g} 秒）" if pipe else "") + "、子程序等晶片最多 "
+              + (f"{cp.JOB_TIMEOUT_MS} ms" if hasattr(cp, "JOB_TIMEOUT_MS") else "10 秒（舊版 chip_process）"))
 
     W = args.width // 2 * 2
     H = W * 9 // 16 // 2 * 2
@@ -1004,7 +1023,9 @@ def main():
                 per = " ".join(f"{c['crib']}:{c['per_s']}" for c in s["cribs"])
                 print(f"[{now_str()}] 第 {wall.clock.now() / 60:.0f} 分：每床每秒判讀 {per}；最長沒判讀 "
                       f"{max(c['max_gap_s'] for c in s['cribs']):.1f} 秒；離線 {sum(c['offline_lapses'] for c in s['cribs'])} 次；"
-                      f"晶片重開 {s['chip_restarts']} 次；畫面 {s['display_fps']} 幀/秒；推播 {s['push']['sent']}／失敗 {s['push']['failed']}",
+                      f"晶片重開 {s['chip_restarts']} 次"
+                      + (f"（最慢一次呼叫 {s['chip_call_max_ms']} ms）" if s['chip_call_max_ms'] else "")
+                      + f"；畫面 {s['display_fps']} 幀/秒；推播 {s['push']['sent']}／失敗 {s['push']['failed']}",
                       flush=True)
     except KeyboardInterrupt:
         print("（Ctrl+C）")
@@ -1020,7 +1041,8 @@ def main():
         print(f"→ {args.snapshot}")
     s = wall.summary(f"{started:%Y-%m-%d %H:%M:%S}", time.monotonic() - wall0)
     log_path.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"跑了 {s['seconds']:.0f} 秒（展演時鐘 {s['show_seconds']:.0f} 秒）；畫面 {s['display_fps']} 幀/秒；晶片重開 {s['chip_restarts']} 次；"
+    print(f"跑了 {s['seconds']:.0f} 秒（展演時鐘 {s['show_seconds']:.0f} 秒）；畫面 {s['display_fps']} 幀/秒；晶片重開 {s['chip_restarts']} 次"
+          + (f"（最慢一次呼叫 {s['chip_call_max_ms']} ms）" if s['chip_call_max_ms'] else "") + "；"
           f"推播送出 {s['push']['sent']}、失敗 {s['push']['failed']}" + (f"、中位數 {s['push']['median_s']} 秒" if s['push']['median_s'] else ""))
     for c in s["cribs"]:
         print(f"  Crib {c['crib']}：判讀 {c['analyses']} 次（每秒 {c['per_s']}，最近每次 {c['ms_recent']} ms），最長 {c['max_gap_s']} 秒沒判讀；"

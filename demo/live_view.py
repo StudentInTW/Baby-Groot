@@ -218,7 +218,8 @@ class Analyzer(threading.Thread):
 
     def inject_fault(self, t):
         """--fault 測試用：到了影片第幾秒製造一次故障。error：接下來 ERROR_S 秒判讀直接出錯（不用晶片）；
-        kill：砍掉晶片子程序（等於晶片當掉，FG_CHIP_PROCESS=1 才有）；hang：暫停晶片子程序（等於卡住，主程序 12 秒後砍掉重開）。"""
+        kill：砍掉晶片子程序（等於晶片當掉，FG_CHIP_PROCESS=1 才有）；hang：暫停晶片子程序（等於卡住，主程序等 chip_process.CALL_TIMEOUT_S
+        沒回應就砍掉重開：11/28 晚起 2 秒、一次好幾張口鼻小塊時每張多 PIPE_PER_IMAGE_S，舊版 12 秒）。"""
         while self.faults and t >= self.faults[0][0]:
             at, kind = self.faults.pop(0)
             print(f"[故障測試] 影片 {t:.1f} 秒：{kind}", flush=True)
